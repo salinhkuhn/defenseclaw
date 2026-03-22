@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/defenseclaw/defenseclaw/internal/enforce"
 	"github.com/defenseclaw/defenseclaw/internal/scanner"
 )
 
@@ -49,13 +50,31 @@ func init() {
 }
 
 func runScanSkill(cmd *cobra.Command, args []string) error {
+	target := args[0]
+
+	if skip, errMsg := checkAdmissionGate("skill", target); skip {
+		if errMsg != "" {
+			return fmt.Errorf("scan: %s", errMsg)
+		}
+		return nil
+	}
+
 	s := scanner.NewSkillScanner(cfg.Scanners.SkillScanner)
-	return execScanner(cmd.Context(), s, args[0])
+	return execScanner(cmd.Context(), s, target)
 }
 
 func runScanMCP(cmd *cobra.Command, args []string) error {
+	target := args[0]
+
+	if skip, errMsg := checkAdmissionGate("mcp", target); skip {
+		if errMsg != "" {
+			return fmt.Errorf("scan: %s", errMsg)
+		}
+		return nil
+	}
+
 	s := scanner.NewMCPScanner(cfg.Scanners.MCPScanner)
-	return execScanner(cmd.Context(), s, args[0])
+	return execScanner(cmd.Context(), s, target)
 }
 
 func runScanAIBOM(cmd *cobra.Command, args []string) error {
@@ -90,6 +109,29 @@ func runScanAll(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("scan errors:\n  %s", strings.Join(errs, "\n  "))
 	}
 	return nil
+}
+
+func checkAdmissionGate(targetType, target string) (bool, string) {
+	if auditStore == nil {
+		return false, ""
+	}
+
+	pe := enforce.NewPolicyEngine(auditStore)
+
+	blocked, err := pe.IsBlocked(targetType, target)
+	if err == nil && blocked {
+		_ = auditLog.LogAction("scan-rejected", target, fmt.Sprintf("type=%s reason=blocked", targetType))
+		return true, fmt.Sprintf("%s %q is on the block list — scan rejected", targetType, target)
+	}
+
+	allowed, err := pe.IsAllowed(targetType, target)
+	if err == nil && allowed {
+		fmt.Printf("[scan] %s %q is on the allow list — skipping scan\n", targetType, target)
+		_ = auditLog.LogAction("scan-skipped", target, fmt.Sprintf("type=%s reason=allow-listed", targetType))
+		return true, ""
+	}
+
+	return false, ""
 }
 
 func execScanner(ctx context.Context, s scanner.Scanner, target string) error {

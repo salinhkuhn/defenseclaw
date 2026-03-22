@@ -5,8 +5,8 @@ Get DefenseClaw running in under 5 minutes.
 ## Prerequisites
 
 - **Go 1.22+** — to build from source
-- **Python 3.9+** — for scanner dependencies
-- **pip** — to install Python scanners
+- **Python 3.11+** — for scanner dependencies
+- **[uv](https://docs.astral.sh/uv/)** (recommended) or pip
 
 ## 1. Build
 
@@ -23,15 +23,7 @@ make build-linux-arm64
 scp defenseclaw-linux-arm64 spark:/usr/local/bin/defenseclaw
 ```
 
-## 2. Install Scanner Dependencies
-
-```bash
-bash scripts/setup-scanners.sh
-```
-
-This installs `skill-scanner`, `mcp-scanner`, and `aibom` via pip.
-
-## 3. Initialize
+## 2. Initialize
 
 ```bash
 defenseclaw init
@@ -42,16 +34,19 @@ This creates `~/.defenseclaw/` with:
 - `audit.db` — SQLite audit log
 - `quarantine/` — blocked skill storage
 - `plugins/` — custom scanner plugins
-- `policies/` — policy templates
+- `policies/` — OpenShell policy files
 
-## 4. First Scan
+Scanner dependencies are installed automatically during init.
+Use `--skip-install` to skip this step.
+
+## 3. First Scan
 
 ```bash
-# Scan a clean skill
-defenseclaw scan skill ./test/fixtures/skills/clean-skill/
+# Scan a skill
+defenseclaw scan skill ./path/to/skill/
 
-# Scan a skill with known issues
-defenseclaw scan skill ./test/fixtures/skills/malicious-skill/
+# Scan an MCP server
+defenseclaw scan mcp https://mcp-server.example.com
 
 # Generate AI bill of materials
 defenseclaw scan aibom .
@@ -60,9 +55,45 @@ defenseclaw scan aibom .
 defenseclaw scan
 ```
 
-## 5. Next Steps
+## 4. Block/Allow Enforcement
 
-- `defenseclaw block skill <name>` — block a skill (iteration 2)
+```bash
+# Block a skill (quarantines files + updates sandbox policy)
+defenseclaw block skill ./malicious-skill --reason "exfil pattern"
+
+# Block an MCP server (adds to network deny-list)
+defenseclaw block mcp https://shady.example.com --reason "hidden instructions"
+
+# View what's blocked
+defenseclaw list blocked
+
+# Allow a previously blocked skill (re-scans first, rejects if still HIGH/CRITICAL)
+defenseclaw allow skill ./malicious-skill
+
+# Allow without re-scanning
+defenseclaw allow skill ./malicious-skill --skip-rescan --reason "manually verified"
+
+# View allow list
+defenseclaw list allowed
+
+# Emergency quarantine (block + move files in one step)
+defenseclaw quarantine ./risky-skill
+```
+
+## 5. Audit Log
+
+```bash
+# View recent audit events
+defenseclaw audit
+
+# Show more events
+defenseclaw audit -n 50
+```
+
+Every action (scan, block, allow, quarantine, init) is logged.
+
+## 6. Next Steps
+
 - `defenseclaw tui` — open the dashboard (iteration 3)
 - `defenseclaw deploy` — full orchestrated deploy (iteration 4)
 

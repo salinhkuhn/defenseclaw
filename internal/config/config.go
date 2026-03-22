@@ -76,7 +76,7 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("environment", string(DetectEnvironment()))
 	viper.SetDefault("scanners.skill_scanner", "skill-scanner")
 	viper.SetDefault("scanners.mcp_scanner", "mcp-scanner")
-	viper.SetDefault("scanners.aibom", "aibom")
+	viper.SetDefault("scanners.aibom", "cisco-aibom")
 	viper.SetDefault("scanners.codeguard", "codeguard")
 	viper.SetDefault("openshell.binary", "openshell")
 	viper.SetDefault("openshell.policy_dir", "/etc/openshell/policies")

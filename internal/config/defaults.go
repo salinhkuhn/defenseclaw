@@ -63,7 +63,7 @@ func DefaultConfig() *Config {
 		Scanners: ScannersConfig{
 			SkillScanner: "skill-scanner",
 			MCPScanner:   "mcp-scanner",
-			AIBOM:        "aibom",
+			AIBOM:        "cisco-aibom",
 			CodeGuard:    "codeguard",
 		},
 		OpenShell: OpenShellConfig{

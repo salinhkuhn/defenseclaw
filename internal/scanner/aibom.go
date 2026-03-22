@@ -16,7 +16,7 @@ type AIBOMScanner struct {
 
 func NewAIBOMScanner(binaryPath string) *AIBOMScanner {
 	if binaryPath == "" {
-		binaryPath = "aibom"
+		binaryPath = "cisco-aibom"
 	}
 	return &AIBOMScanner{BinaryPath: binaryPath}
 }
@@ -28,7 +28,7 @@ func (s *AIBOMScanner) SupportedTargets() []string { return []string{"skill", "m
 func (s *AIBOMScanner) Scan(ctx context.Context, target string) (*ScanResult, error) {
 	start := time.Now()
 
-	cmd := exec.CommandContext(ctx, s.BinaryPath, "generate", "--format", "json", target)
+	cmd := exec.CommandContext(ctx, s.BinaryPath, "analyze", target, "--output-format", "json", "--output-file", "/dev/stdout")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -45,7 +45,7 @@ func (s *AIBOMScanner) Scan(ctx context.Context, target string) (*ScanResult, er
 
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			return nil, fmt.Errorf("scanner: %s not found at %q — install with: pip install aibom", s.Name(), s.BinaryPath)
+			return nil, fmt.Errorf("scanner: %s not found at %q — install with: uv tool install cisco-aibom", s.Name(), s.BinaryPath)
 		}
 		if stdout.Len() == 0 {
 			return nil, fmt.Errorf("scanner: %s failed: %s", s.Name(), stderr.String())
@@ -64,14 +64,28 @@ func (s *AIBOMScanner) Scan(ctx context.Context, target string) (*ScanResult, er
 }
 
 type aibomOutput struct {
-	Components []aibomComponent `json:"components"`
+	Analysis *aibomAnalysis `json:"aibom_analysis"`
+}
+
+type aibomAnalysis struct {
+	Sources map[string]aibomSource `json:"sources"`
+	Summary aibomSummary           `json:"summary"`
+}
+
+type aibomSource struct {
+	Components      map[string][]aibomComponent `json:"components"`
+	TotalComponents int                         `json:"total_components"`
+}
+
+type aibomSummary struct {
+	TotalComponents int            `json:"total_components"`
+	Categories      map[string]int `json:"categories"`
 }
 
 type aibomComponent struct {
-	Name     string   `json:"name"`
-	Version  string   `json:"version"`
-	Type     string   `json:"type"`
-	Licenses []string `json:"licenses"`
+	Name     string `json:"name"`
+	FilePath string `json:"file_path"`
+	Category string `json:"category"`
 }
 
 func parseAIBOMOutput(data []byte) ([]Finding, error) {
@@ -80,15 +94,25 @@ func parseAIBOMOutput(data []byte) ([]Finding, error) {
 		return nil, err
 	}
 
-	findings := make([]Finding, 0, len(out.Components))
-	for _, c := range out.Components {
-		findings = append(findings, Finding{
-			ID:       fmt.Sprintf("AIBOM-%s-%s", c.Name, c.Version),
-			Severity: SeverityInfo,
-			Title:    fmt.Sprintf("Component: %s@%s", c.Name, c.Version),
-			Description: fmt.Sprintf("Type: %s, Licenses: %v", c.Type, c.Licenses),
-			Scanner:  "aibom",
-		})
+	var findings []Finding
+
+	if out.Analysis != nil {
+		for source, s := range out.Analysis.Sources {
+			for category, components := range s.Components {
+				for _, c := range components {
+					findings = append(findings, Finding{
+						ID:          fmt.Sprintf("AIBOM-%s-%s", category, c.Name),
+						Severity:    SeverityInfo,
+						Title:       fmt.Sprintf("[%s] %s", category, c.Name),
+						Description: fmt.Sprintf("Source: %s, File: %s", source, c.FilePath),
+						Location:    c.FilePath,
+						Scanner:     "aibom",
+						Tags:        []string{category},
+					})
+				}
+			}
+		}
 	}
+
 	return findings, nil
 }

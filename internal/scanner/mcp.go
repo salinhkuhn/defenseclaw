@@ -45,7 +45,7 @@ func (s *MCPScanner) Scan(ctx context.Context, target string) (*ScanResult, erro
 
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			return nil, fmt.Errorf("scanner: %s not found at %q — install with: pip install mcp-scanner", s.Name(), s.BinaryPath)
+			return nil, fmt.Errorf("scanner: %s not found at %q — install with: uv tool install cisco-ai-mcp-scanner", s.Name(), s.BinaryPath)
 		}
 		if stdout.Len() == 0 {
 			return nil, fmt.Errorf("scanner: %s failed: %s", s.Name(), stderr.String())

@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -11,14 +13,17 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/config"
 )
 
+var skipInstall bool
+
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize DefenseClaw environment",
-	Long:  "Creates ~/.defenseclaw/, default config, SQLite database, and checks for scanner dependencies.",
+	Long:  "Creates ~/.defenseclaw/, default config, SQLite database, and installs scanner dependencies.",
 	RunE:  runInit,
 }
 
 func init() {
+	initCmd.Flags().BoolVar(&skipInstall, "skip-install", false, "Skip automatic scanner dependency installation")
 	rootCmd.AddCommand(initCmd)
 }
 
@@ -55,24 +60,10 @@ func runInit(_ *cobra.Command, _ []string) error {
 	logger := audit.NewLogger(store)
 	_ = logger.LogAction("init", defaults.DataDir, fmt.Sprintf("environment=%s", env))
 
-	scanners := []struct {
-		name    string
-		bin     string
-		install string
-	}{
-		{"skill-scanner", defaults.Scanners.SkillScanner, "pip install cisco-ai-skill-scanner"},
-		{"mcp-scanner", defaults.Scanners.MCPScanner, "pip install mcp-scanner"},
-		{"aibom", defaults.Scanners.AIBOM, "pip install aibom"},
-	}
+	fmt.Println()
+	installScanners(defaults, logger)
 
-	for _, s := range scanners {
-		if _, err := exec.LookPath(s.bin); err != nil {
-			fmt.Printf("  Scanner %s: not found (install with: %s)\n", s.name, s.install)
-		} else {
-			fmt.Printf("  Scanner %s: found\n", s.name)
-		}
-	}
-
+	fmt.Println()
 	if _, err := exec.LookPath(defaults.OpenShell.Binary); err != nil {
 		switch env {
 		case config.EnvMacOS:
@@ -86,4 +77,116 @@ func runInit(_ *cobra.Command, _ []string) error {
 
 	fmt.Println("\nDefenseClaw initialized. Run 'defenseclaw scan' to start scanning.")
 	return nil
+}
+
+func installScanners(defaults *config.Config, logger *audit.Logger) {
+	if skipInstall {
+		fmt.Println("  Scanners: skipped (--skip-install)")
+		return
+	}
+
+	ensureUV()
+
+	type dep struct {
+		name string
+		bin  string
+		pkg  string
+	}
+
+	deps := []dep{
+		{"skill-scanner", defaults.Scanners.SkillScanner, "cisco-ai-skill-scanner"},
+		{"mcp-scanner", defaults.Scanners.MCPScanner, "cisco-ai-mcp-scanner"},
+		{"cisco-aibom", defaults.Scanners.AIBOM, "cisco-aibom"},
+	}
+
+	for _, d := range deps {
+		if _, err := exec.LookPath(d.bin); err == nil {
+			fmt.Printf("  %s: already installed\n", d.name)
+			continue
+		}
+
+		fmt.Printf("  %s: installing...", d.name)
+
+		if installWithUV(d.pkg) {
+			if _, err := exec.LookPath(d.bin); err == nil {
+				fmt.Printf(" done\n")
+			} else {
+				fmt.Printf(" installed (run 'hash -r' or open a new shell if binary not found)\n")
+			}
+			_ = logger.LogAction("install-scanner", d.name, fmt.Sprintf("package=%s", d.pkg))
+		} else {
+			fmt.Printf(" failed\n")
+			fmt.Printf("    install manually: uv tool install %s\n", d.pkg)
+		}
+	}
+}
+
+func ensureUV() {
+	if _, err := exec.LookPath("uv"); err == nil {
+		return
+	}
+
+	fmt.Printf("  uv: not found, installing...")
+
+	cmd := exec.Command("sh", "-c", "curl -LsSf https://astral.sh/uv/install.sh | sh")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		fmt.Printf(" failed\n")
+		fmt.Printf("    install uv manually: curl -LsSf https://astral.sh/uv/install.sh | sh\n")
+		fmt.Printf("    then re-run: defenseclaw init\n")
+		return
+	}
+
+	addUVToPath()
+	fmt.Printf(" done\n")
+}
+
+func addUVToPath() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	uvPaths := []string{
+		home + "/.local/bin",
+		home + "/.cargo/bin",
+	}
+	currentPath := os.Getenv("PATH")
+	for _, p := range uvPaths {
+		if !strings.Contains(currentPath, p) {
+			os.Setenv("PATH", p+":"+currentPath)
+			currentPath = p + ":" + currentPath
+		}
+	}
+}
+
+func installWithUV(pkg string) bool {
+	uvBin, err := exec.LookPath("uv")
+	if err != nil {
+		return false
+	}
+
+	cmd := exec.Command(uvBin, "tool", "install", "--python", "3.13", pkg)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		trimmed := strings.TrimSpace(stderr.String())
+		if strings.Contains(trimmed, "already installed") {
+			return true
+		}
+		if trimmed != "" {
+			fmt.Printf("\n    %s", firstLine(trimmed))
+		}
+		return false
+	}
+	return true
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }

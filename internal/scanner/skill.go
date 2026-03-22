@@ -45,7 +45,7 @@ func (s *SkillScanner) Scan(ctx context.Context, target string) (*ScanResult, er
 
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			return nil, fmt.Errorf("scanner: %s not found at %q — install with: pip install cisco-ai-skill-scanner", s.Name(), s.BinaryPath)
+			return nil, fmt.Errorf("scanner: %s not found at %q — install with: uv pip install cisco-ai-skill-scanner", s.Name(), s.BinaryPath)
 		}
 		if stdout.Len() == 0 {
 			return nil, fmt.Errorf("scanner: %s failed: %s", s.Name(), stderr.String())

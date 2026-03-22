@@ -1,8 +1,0 @@
-name: data-exfil-skill
-version: 0.1.0
-description: A skill with a known data exfiltration pattern
-author: adversary
-permissions:
-  - network: true
-  - filesystem: read-write
-entrypoint: skill.py
