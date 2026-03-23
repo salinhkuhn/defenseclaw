@@ -24,12 +24,14 @@ type Client struct {
 	cfg    *config.GatewayConfig
 	device *DeviceIdentity
 
-	conn     *websocket.Conn
-	mu       sync.Mutex
-	closed   bool
-	lastSeq  int
-	pending  map[string]chan *ResponseFrame
-	hello    *HelloOK
+	conn       *websocket.Conn
+	mu         sync.Mutex
+	closed     bool
+	lastSeq    int
+	pending    map[string]chan *ResponseFrame
+	hello      *HelloOK
+	disconnCh  chan struct{}
+	disconnOnce sync.Once
 
 	// OnEvent is called for every non-connect event frame.
 	OnEvent func(EventFrame)
@@ -77,6 +79,8 @@ func (c *Client) Connect(ctx context.Context) error {
 		time.Since(t0).Round(time.Millisecond), resp.StatusCode)
 	c.conn = conn
 	c.closed = false
+	c.disconnCh = make(chan struct{})
+	c.disconnOnce = sync.Once{}
 
 	fmt.Fprintf(os.Stderr, "[gateway] waiting for connect.challenge ...\n")
 	nonce, err := c.waitForChallenge(ctx)
@@ -213,6 +217,8 @@ func (c *Client) sendConnect(ctx context.Context, nonce string) (*HelloOK, error
 }
 
 func (c *Client) readLoop() {
+	defer c.signalDisconnect()
+
 	for {
 		_, raw, err := c.conn.ReadMessage()
 		if err != nil {
@@ -342,10 +348,30 @@ func (c *Client) request(ctx context.Context, method string, params interface{})
 // Close shuts down the WebSocket connection.
 func (c *Client) Close() error {
 	c.closed = true
+	c.signalDisconnect()
 	if c.conn != nil {
 		return c.conn.Close()
 	}
 	return nil
+}
+
+// Disconnected returns a channel that is closed when the underlying WebSocket
+// connection drops. Used by the sidecar to trigger reconnection.
+func (c *Client) Disconnected() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.disconnCh == nil {
+		c.disconnCh = make(chan struct{})
+	}
+	return c.disconnCh
+}
+
+func (c *Client) signalDisconnect() {
+	c.disconnOnce.Do(func() {
+		if c.disconnCh != nil {
+			close(c.disconnCh)
+		}
+	})
 }
 
 // Hello returns the hello-ok payload from the initial handshake.

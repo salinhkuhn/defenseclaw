@@ -117,6 +117,15 @@ func DefaultConfig() *Config {
 			ReconnectMs:     800,
 			MaxReconnectMs:  15000,
 			ApprovalTimeout: 30,
+			APIPort:         18790,
+			Watcher: GatewayWatcherConfig{
+				Enabled: false,
+				Skill: GatewayWatcherSkillConfig{
+					Enabled:    true,
+					TakeAction: true,
+					Dirs:       []string{},
+				},
+			},
 		},
 		SkillActions:  DefaultSkillActions(),
 	}

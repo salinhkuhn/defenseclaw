@@ -92,15 +92,28 @@ type OpenShellConfig struct {
 	PolicyDir string `mapstructure:"policy_dir" yaml:"policy_dir"`
 }
 
+type GatewayWatcherSkillConfig struct {
+	Enabled    bool     `mapstructure:"enabled"      yaml:"enabled"`
+	TakeAction bool     `mapstructure:"take_action"   yaml:"take_action"`
+	Dirs       []string `mapstructure:"dirs"           yaml:"dirs"`
+}
+
+type GatewayWatcherConfig struct {
+	Enabled bool                      `mapstructure:"enabled" yaml:"enabled"`
+	Skill   GatewayWatcherSkillConfig `mapstructure:"skill"   yaml:"skill"`
+}
+
 type GatewayConfig struct {
-	Host            string `mapstructure:"host"              yaml:"host"`
-	Port            int    `mapstructure:"port"              yaml:"port"`
-	Token           string `mapstructure:"token"             yaml:"token"`
-	DeviceKeyFile   string `mapstructure:"device_key_file"   yaml:"device_key_file"`
-	AutoApprove     bool   `mapstructure:"auto_approve_safe" yaml:"auto_approve_safe"`
-	ReconnectMs     int    `mapstructure:"reconnect_ms"      yaml:"reconnect_ms"`
-	MaxReconnectMs  int    `mapstructure:"max_reconnect_ms"  yaml:"max_reconnect_ms"`
-	ApprovalTimeout int    `mapstructure:"approval_timeout_s" yaml:"approval_timeout_s"`
+	Host            string               `mapstructure:"host"              yaml:"host"`
+	Port            int                  `mapstructure:"port"              yaml:"port"`
+	Token           string               `mapstructure:"token"             yaml:"token"`
+	DeviceKeyFile   string               `mapstructure:"device_key_file"   yaml:"device_key_file"`
+	AutoApprove     bool                 `mapstructure:"auto_approve_safe" yaml:"auto_approve_safe"`
+	ReconnectMs     int                  `mapstructure:"reconnect_ms"      yaml:"reconnect_ms"`
+	MaxReconnectMs  int                  `mapstructure:"max_reconnect_ms"  yaml:"max_reconnect_ms"`
+	ApprovalTimeout int                  `mapstructure:"approval_timeout_s" yaml:"approval_timeout_s"`
+	APIPort         int                  `mapstructure:"api_port"           yaml:"api_port"`
+	Watcher         GatewayWatcherConfig `mapstructure:"watcher"            yaml:"watcher"`
 }
 
 type RuntimeAction string
@@ -246,4 +259,9 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("gateway.reconnect_ms", 800)
 	viper.SetDefault("gateway.max_reconnect_ms", 15000)
 	viper.SetDefault("gateway.approval_timeout_s", 30)
+	viper.SetDefault("gateway.api_port", 18790)
+	viper.SetDefault("gateway.watcher.enabled", false)
+	viper.SetDefault("gateway.watcher.skill.enabled", true)
+	viper.SetDefault("gateway.watcher.skill.take_action", true)
+	viper.SetDefault("gateway.watcher.skill.dirs", []string{})
 }

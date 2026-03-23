@@ -138,17 +138,14 @@ func (w *InstallWatcher) Run(ctx context.Context) error {
 			if event.Op&(fsnotify.Create|fsnotify.Rename) == 0 {
 				continue
 			}
+			if !w.isDirectChildDir(event.Name) {
+				continue
+			}
 			w.mu.Lock()
 			if _, exists := w.pending[event.Name]; !exists {
 				w.pending[event.Name] = time.Now()
 			}
 			w.mu.Unlock()
-
-			// When a new subdirectory appears, start watching it too
-			// so we catch nested installs.
-			if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-				_ = fsw.Add(event.Name)
-			}
 
 		case err, ok := <-fsw.Errors:
 			if !ok {
@@ -314,6 +311,34 @@ func (w *InstallWatcher) enforceBlock(evt InstallEvent) {
 	}
 }
 
+// isDirectChildDir returns true if path is a directory and a direct child
+// of one of the watched skill or MCP directories. Files and nested
+// subdirectories inside a skill are ignored — a skill is always a top-level
+// directory under a skill dir.
+func (w *InstallWatcher) isDirectChildDir(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+
+	parent := filepath.Dir(path)
+	parentAbs, _ := filepath.Abs(parent)
+
+	for _, dir := range w.skillDirs {
+		dirAbs, _ := filepath.Abs(dir)
+		if parentAbs == dirAbs {
+			return true
+		}
+	}
+	for _, dir := range w.mcpDirs {
+		dirAbs, _ := filepath.Abs(dir)
+		if parentAbs == dirAbs {
+			return true
+		}
+	}
+	return false
+}
+
 func ensureAndWatch(fsw *fsnotify.Watcher, dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create dir: %w", err)
@@ -321,18 +346,6 @@ func ensureAndWatch(fsw *fsnotify.Watcher, dir string) error {
 
 	if err := fsw.Add(dir); err != nil {
 		return fmt.Errorf("watch: %w", err)
-	}
-
-	// Watch existing subdirectories so nested installs are caught immediately.
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			sub := filepath.Join(dir, e.Name())
-			_ = fsw.Add(sub)
-		}
 	}
 
 	return nil
