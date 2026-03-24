@@ -349,19 +349,15 @@ install_python_cli() {
     
     # Install the CLI in editable mode with TUI extras
     cd "${REPO_ROOT}"
-    ${pip_cmd} -e "cli[tui]"
+    ${pip_cmd} -e ".[tui]"
     
     log_success "Python CLI installed (editable mode)"
     
-    # Try to install scanner extra (may fail if litellm is unavailable on PyPI)
-    log_info "Attempting to install scanner dependencies..."
-    if ${pip_cmd} -e "cli[scanner]" 2>/dev/null; then
-        log_success "Scanner dependencies installed"
-    else
-        log_warn "Scanner dependencies unavailable (litellm may be temporarily removed from PyPI)"
-        log_warn "The CLI will work, but 'defenseclaw scan' requires the scanner."
-        log_warn "Check https://pypi.org/project/litellm/ for status."
-    fi
+    # Note: cisco-ai-skill-scanner not installed due to litellm PyPI incident
+    # Once litellm is restored, users can manually install:
+    #   pip install cisco-ai-skill-scanner
+    log_info "Scanner dependencies skipped (litellm unavailable on PyPI)"
+    log_info "Once restored, install manually: pip install cisco-ai-skill-scanner"
     
     # Verify the CLI works
     if "${VENV_DIR}/bin/defenseclaw" --help &> /dev/null; then

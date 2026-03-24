@@ -37,7 +37,7 @@ class SkillScannerWrapper:
         except ImportError:
             print(
                 "error: cisco-ai-skill-scanner not installed.\n"
-                "  Install with: pip install defenseclaw[scanner]\n"
+                "  Install with: pip install cisco-ai-skill-scanner\n"
                 "\n"
                 "  Note: If installation fails due to litellm dependency,\n"
                 "  the package may be temporarily unavailable on PyPI.\n"

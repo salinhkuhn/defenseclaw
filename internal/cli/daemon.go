@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -155,11 +154,3 @@ func collectDaemonArgs(cmd *cobra.Command) []string {
 	return args
 }
 
-func checkDaemonMode() bool {
-	if !daemon.IsDaemonChild() {
-		return false
-	}
-	// Running as daemon child — suppress banner output
-	fmt.Fprintln(os.Stderr, "[daemon] starting as background process")
-	return true
-}

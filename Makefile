@@ -13,7 +13,7 @@ dev-install:
 pycli:
 	@command -v uv >/dev/null 2>&1 || { echo "uv not found — install from https://docs.astral.sh/uv/"; exit 1; }
 	uv venv $(VENV) --python 3.12
-	uv pip install -e cli --python $(VENV)/bin/python
+	uv pip install -e . --python $(VENV)/bin/python
 	@echo ""
 	@echo "Done. Activate the environment and run:"
 	@echo "  source $(VENV)/bin/activate"
