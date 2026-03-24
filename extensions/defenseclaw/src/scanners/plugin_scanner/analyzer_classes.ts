@@ -9,6 +9,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Finding, Severity, ScanProfile } from "../../types.js";
 import type { Analyzer, ScanContext, SourceFile } from "./analyzer.js";
+import type { LLMPolicy } from "./policy.js";
 import {
   checkPermissions,
   checkDependencies,
@@ -165,6 +166,12 @@ export class LockfileAnalyzer implements Analyzer {
 
 export class MetaAnalyzer implements Analyzer {
   readonly name = "meta";
+  private llmPolicy?: LLMPolicy;
+
+  constructor(llmPolicy?: LLMPolicy) {
+    this.llmPolicy = llmPolicy;
+  }
+
   async analyze(ctx: ScanContext): Promise<Finding[]> {
     const prev = ctx.previousFindings;
     if (prev.length === 0) return [];
@@ -258,6 +265,37 @@ export class MetaAnalyzer implements Analyzer {
         remediation: "Block this plugin. Review for lateral movement attempts.",
         tags: ["exfiltration", "credential-theft"],
       }));
+    }
+
+    // LLM-powered meta analysis (when configured)
+    if (this.llmPolicy?.enabled) {
+      try {
+        const { runMetaLLM } = await import("./llm_analyzer.js");
+        const llmConfig = {
+          model: this.llmPolicy.model,
+          apiKey: this.llmPolicy.api_key || undefined,
+          apiBase: this.llmPolicy.api_base || undefined,
+          provider: this.llmPolicy.provider || undefined,
+          maxTokens: this.llmPolicy.max_output_tokens,
+          pythonBinary: this.llmPolicy.python_binary || undefined,
+        };
+
+        const { newFindings, falsePositiveRuleIds } = await runMetaLLM(llmConfig, ctx);
+        findings.push(...newFindings);
+
+        // Mark false positives as suppressed in previous findings
+        // (they stay in the output but with suppressed=true)
+        if (falsePositiveRuleIds.length > 0) {
+          for (const f of prev) {
+            if (f.rule_id && falsePositiveRuleIds.includes(f.rule_id)) {
+              f.suppressed = true;
+              f.suppression_reason = "LLM meta-analysis: likely false positive";
+            }
+          }
+        }
+      } catch {
+        // LLM meta not available — pattern-based findings are still returned
+      }
     }
 
     return findings;

@@ -41,6 +41,27 @@ export interface SeverityOverride {
   severity: Severity;
 }
 
+export interface LLMPolicy {
+  /** Enable LLM-based analysis. */
+  enabled: boolean;
+  /** Model name (e.g. "claude-sonnet-4-20250514"). */
+  model: string;
+  /** API key (read from config module at build time). */
+  api_key: string;
+  /** Custom API base URL. */
+  api_base: string;
+  /** Provider hint (litellm auto-detects from model name). */
+  provider: string;
+  /** Max output tokens for LLM analyzer (default 8192). */
+  max_output_tokens: number;
+  /** Max output tokens multiplier for meta analyzer (default 3). */
+  meta_multiplier: number;
+  /** Number of consensus runs (default 1). */
+  consensus_runs: number;
+  /** Python binary path. */
+  python_binary: string;
+}
+
 export interface PluginScanPolicy {
   /** Policy name for identification. */
   policy_name: string;
@@ -66,6 +87,9 @@ export interface PluginScanPolicy {
 
   /** Max findings per deduplicated rule (cap occurrence_count reports). */
   max_findings_per_rule: number;
+
+  /** LLM analysis configuration. */
+  llm: LLMPolicy;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +130,20 @@ function defaultAnalyzers(): AnalyzersPolicy {
   };
 }
 
+function defaultLLM(): LLMPolicy {
+  return {
+    enabled: false,
+    model: "claude-sonnet-4-20250514",
+    api_key: "",
+    api_base: "",
+    provider: "",
+    max_output_tokens: 8192,
+    meta_multiplier: 3,
+    consensus_runs: 1,
+    python_binary: "python3",
+  };
+}
+
 export function defaultPolicy(): PluginScanPolicy {
   return {
     policy_name: "default",
@@ -117,6 +155,7 @@ export function defaultPolicy(): PluginScanPolicy {
     min_confidence: 0.0,
     safe_dotfiles: [...DEFAULT_SAFE_DOTFILES],
     max_findings_per_rule: 10,
+    llm: defaultLLM(),
   };
 }
 
@@ -143,6 +182,7 @@ function strictPolicy(): PluginScanPolicy {
       ".editorconfig", ".dockerignore",
     ],
     max_findings_per_rule: 20,
+    llm: defaultLLM(),
   };
 }
 
@@ -169,6 +209,7 @@ function permissivePolicy(): PluginScanPolicy {
     min_confidence: 0.5,
     safe_dotfiles: [...DEFAULT_SAFE_DOTFILES],
     max_findings_per_rule: 5,
+    llm: defaultLLM(),
   };
 }
 
@@ -253,6 +294,21 @@ function mergePolicy(
   // Safe dotfiles (replace)
   if (Array.isArray(override["safe_dotfiles"])) {
     result.safe_dotfiles = override["safe_dotfiles"] as string[];
+  }
+
+  // LLM config (merge)
+  if (override["llm"] && typeof override["llm"] === "object") {
+    const l = override["llm"] as Record<string, unknown>;
+    result.llm = { ...result.llm };
+    if (typeof l["enabled"] === "boolean") result.llm.enabled = l["enabled"];
+    if (typeof l["model"] === "string") result.llm.model = l["model"];
+    if (typeof l["api_key"] === "string") result.llm.api_key = l["api_key"];
+    if (typeof l["api_base"] === "string") result.llm.api_base = l["api_base"];
+    if (typeof l["provider"] === "string") result.llm.provider = l["provider"];
+    if (typeof l["max_output_tokens"] === "number") result.llm.max_output_tokens = l["max_output_tokens"];
+    if (typeof l["meta_multiplier"] === "number") result.llm.meta_multiplier = l["meta_multiplier"];
+    if (typeof l["consensus_runs"] === "number") result.llm.consensus_runs = l["consensus_runs"];
+    if (typeof l["python_binary"] === "string") result.llm.python_binary = l["python_binary"];
   }
 
   return result;

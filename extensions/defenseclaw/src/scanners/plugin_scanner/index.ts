@@ -87,10 +87,11 @@ export async function scanPlugin(
     return buildResult(target, findings, start);
   }
 
-  // --- Build analyzer pipeline (respecting policy toggles) ---
+  // --- Build analyzer pipeline (respecting policy toggles + LLM config) ---
   const analyzers = buildAnalyzers({
     profile,
     disabledAnalyzers: disabledAnalyzerNames(policy),
+    llm: policy.llm,
   });
 
   // --- Build scan context ---
