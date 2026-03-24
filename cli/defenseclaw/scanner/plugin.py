@@ -1,6 +1,7 @@
 """Plugin scanner — shells out to defenseclaw-plugin-scanner (Node.js).
 
 The scanner lives in extensions/defenseclaw and is installed as a Node binary.
+Supports the same LLM flags as the skill scanner (reads from skill_scanner config).
 """
 
 from __future__ import annotations
@@ -22,17 +23,55 @@ class PluginScannerWrapper:
     def name(self) -> str:
         return "plugin-scanner"
 
-    def scan(self, target: str) -> ScanResult:
+    def scan(
+        self,
+        target: str,
+        *,
+        policy: str = "",
+        profile: str = "",
+        use_llm: bool = False,
+        llm_model: str = "",
+        llm_api_key: str = "",
+        llm_provider: str = "",
+        llm_consensus_runs: int = 0,
+        disable_meta: bool = False,
+        lenient: bool = False,
+    ) -> ScanResult:
         import time
 
         start = time.monotonic()
 
+        args = [self.binary, target]
+        if policy:
+            args.extend(["--policy", policy])
+        if profile:
+            args.extend(["--profile", profile])
+        if use_llm:
+            args.append("--use-llm")
+            if llm_model:
+                args.extend(["--llm-model", llm_model])
+            if llm_provider:
+                args.extend(["--llm-provider", llm_provider])
+            if llm_consensus_runs > 0:
+                args.extend(["--llm-consensus-runs", str(llm_consensus_runs)])
+        if disable_meta:
+            args.append("--no-meta")
+        if lenient:
+            args.append("--lenient")
+
+        # Pass LLM API key via environment (same pattern as skill scanner)
+        env = None
+        if llm_api_key:
+            import os
+            env = {**os.environ, "SKILL_SCANNER_LLM_API_KEY": llm_api_key}
+
         try:
             proc = subprocess.run(
-                [self.binary, target],
+                args,
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=300,  # longer timeout when LLM is enabled
+                env=env,
             )
         except FileNotFoundError:
             print(
@@ -48,8 +87,13 @@ class PluginScannerWrapper:
 
         if proc.stdout.strip():
             try:
+                # The TS plugin scanner outputs a full ScanResult object with
+                # scanner, target, timestamp, findings[], duration_ns, metadata,
+                # and assessment fields (see extensions/defenseclaw/src/types.ts).
                 data = json.loads(proc.stdout)
                 for f in data.get("findings", []):
+                    if f.get("suppressed", False):
+                        continue
                     findings.append(Finding(
                         id=f.get("id", ""),
                         severity=f.get("severity", "INFO"),

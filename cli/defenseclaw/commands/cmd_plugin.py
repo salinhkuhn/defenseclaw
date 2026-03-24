@@ -18,12 +18,43 @@ def plugin() -> None:
 @plugin.command()
 @click.argument("name_or_path")
 @click.option("--json", "as_json", is_flag=True, help="Output scan results as JSON")
+@click.option("--policy", "policy_name", default="", help="Scan policy: default, strict, permissive, or path to YAML")
+@click.option("--profile", type=click.Choice(["default", "strict"]), default=None, help="Scan profile (overrides policy profile)")
+@click.option("--use-llm", is_flag=True, help="Enable LLM-based semantic analysis (uses skill_scanner LLM config)")
+@click.option("--llm-model", default="", help="LLM model override (e.g. claude-sonnet-4-20250514, gpt-4)")
+@click.option("--llm-provider", default="", help="LLM provider hint (anthropic, openai, ollama, etc.)")
+@click.option("--llm-consensus-runs", default=0, type=int, help="Number of LLM consensus runs (default: 1)")
+@click.option("--enable-meta/--no-meta", default=True, help="Enable/disable meta analyzer (default: enabled)")
+@click.option("--lenient", is_flag=True, help="Suppress low-confidence findings (sets min_confidence=0.5)")
 @pass_ctx
-def scan(app: AppContext, name_or_path: str, as_json: bool) -> None:
+def scan(
+    app: AppContext,
+    name_or_path: str,
+    as_json: bool,
+    policy_name: str,
+    profile: str | None,
+    use_llm: bool,
+    llm_model: str,
+    llm_provider: str,
+    llm_consensus_runs: int,
+    enable_meta: bool,
+    lenient: bool,
+) -> None:
     """Scan a plugin directory for security issues.
 
     Uses defenseclaw-plugin-scanner to check for dangerous permissions,
     install scripts, credential theft, obfuscation, and supply chain risks.
+
+    LLM analysis uses the same litellm configuration as the skill scanner
+    (reads from config.yaml: scanners.skill_scanner.llm_*).
+
+    Examples:\n
+      defenseclaw plugin scan my-plugin\n
+      defenseclaw plugin scan my-plugin --policy strict\n
+      defenseclaw plugin scan my-plugin --use-llm\n
+      defenseclaw plugin scan my-plugin --use-llm --llm-model gpt-4\n
+      defenseclaw plugin scan my-plugin --policy ~/.defenseclaw/policies/custom.yaml\n
+      defenseclaw plugin scan /path/to/plugin --profile strict --lenient
     """
     from defenseclaw.scanner.plugin import PluginScannerWrapper
 
@@ -39,12 +70,27 @@ def scan(app: AppContext, name_or_path: str, as_json: bool) -> None:
             click.echo(f"  Provide a path or an installed plugin name from {plugin_dir}", err=True)
             raise SystemExit(1)
 
+    # Build scan options from CLI flags + config
+    scan_options = _build_scan_options(
+        app, policy_name, profile, use_llm, llm_model, llm_provider,
+        llm_consensus_runs, enable_meta, lenient,
+    )
+
     scanner = PluginScannerWrapper()
     if not as_json:
-        click.echo(f"[plugin] scanning {scan_dir}...")
+        flags = []
+        if policy_name:
+            flags.append(f"policy={policy_name}")
+        if use_llm:
+            model = llm_model or scan_options.get("llm_model", "")
+            flags.append(f"llm={model}")
+        if profile:
+            flags.append(f"profile={profile}")
+        flag_str = f" ({', '.join(flags)})" if flags else ""
+        click.echo(f"[plugin] scanning {scan_dir}{flag_str}...")
 
     try:
-        result = scanner.scan(scan_dir)
+        result = scanner.scan(scan_dir, **scan_options)
     except SystemExit:
         raise
     except Exception as exc:
@@ -74,6 +120,43 @@ def scan(app: AppContext, name_or_path: str, as_json: bool) -> None:
                 click.echo(f"      Location: {f.location}")
             if f.remediation:
                 click.echo(f"      Fix: {f.remediation}")
+
+
+def _build_scan_options(
+    app: AppContext,
+    policy_name: str,
+    profile: str | None,
+    use_llm: bool,
+    llm_model: str,
+    llm_provider: str,
+    llm_consensus_runs: int,
+    enable_meta: bool,
+    lenient: bool,
+) -> dict:
+    """Build scan options dict from CLI flags + skill_scanner LLM config."""
+    opts: dict = {}
+
+    if policy_name:
+        opts["policy"] = policy_name
+    if profile:
+        opts["profile"] = profile
+
+    # LLM config: CLI flags override, then fall back to skill_scanner config
+    if use_llm:
+        cfg = app.cfg.scanners.skill_scanner
+        opts["use_llm"] = True
+        opts["llm_model"] = llm_model or cfg.llm_model or "claude-sonnet-4-20250514"
+        opts["llm_api_key"] = cfg.llm_api_key
+        opts["llm_provider"] = llm_provider or cfg.llm_provider
+        opts["llm_consensus_runs"] = llm_consensus_runs or cfg.llm_consensus_runs or 1
+
+    if not enable_meta:
+        opts["disable_meta"] = True
+
+    if lenient:
+        opts["lenient"] = True
+
+    return opts
 
 
 @plugin.command()
