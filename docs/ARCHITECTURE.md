@@ -15,11 +15,12 @@ enforcement, and auditing across existing tools without replacing any component.
 │  │  skill-scanner       │       │  OpenClaw plugin lifecycle hooks        │  │
 │  │  mcp-scanner         │       │  registerService, registerCommand       │  │
 │  │  aibom               │       │  api.on("gateway_start"), etc.          │  │
-│  │  codeguard            │       │                                         │  │
-│  │  [custom scanners]   │       │  Registers hooks in OpenClaw for:       │  │
-│  │                      │       │    - skill install/uninstall             │  │
-│  │  Writes scan results │       │    - MCP server connect/disconnect      │  │
-│  │  directly to DB      │       │    - gateway start/stop                 │  │
+│  │  codeguard            │       │  before_tool_call, exec.approval       │  │
+│  │  [custom scanners]   │       │                                         │  │
+│  │                      │       │  Registers hooks in OpenClaw for:       │  │
+│  │  Writes scan results │       │    - skill install/uninstall             │  │
+│  │  directly to DB      │       │    - MCP server connect/disconnect      │  │
+│  │                      │       │    - tool call interception             │  │
 │  └──────────┬───────────┘       └──────────────┬──────────────────────────┘  │
 │             │ REST API                          │ REST API                    │
 │             │                                   │                            │
@@ -37,19 +38,39 @@ enforcement, and auditing across existing tools without replacing any component.
 │  │  │ & plugins  │  │ export     │  │ gate     │  │ Subscribes to  │   │    │
 │  │  └────────────┘  └────────────┘  └──────────┘  │ all events,    │   │    │
 │  │                                                 │ sends commands │   │    │
-│  │  ┌──────────────────────┐                       └───────┬────────┘   │    │
-│  │  │  SQLite DB            │                               │           │    │
-│  │  │                      │                               │           │    │
-│  │  │  Audit events        │                               │           │    │
-│  │  │  Scan results        │                               │           │    │
-│  │  │  Block/allow lists   │                               │           │    │
-│  │  │  Skill inventory     │                               │           │    │
-│  │  └──────────────────────┘                               │           │    │
-│  └──────────────────────────────────────────────────────────┼───────────┘    │
-│                                                             │                │
-│             ┌───────────────────────────────────────────────┘                │
-│             │ WebSocket (events + RPC commands)                              │
-│             ▼                                                                │
+│  │  ┌──────────────────────┐  ┌──────────────┐    └───────┬────────┘   │    │
+│  │  │  SQLite DB            │  │  LiteLLM     │            │           │    │
+│  │  │                      │  │  Process Mgr │            │           │    │
+│  │  │  Audit events        │  │              │            │           │    │
+│  │  │  Scan results        │  │  Spawns and  │            │           │    │
+│  │  │  Block/allow lists   │  │  supervises  │            │           │    │
+│  │  │  Skill inventory     │  │  LiteLLM     │            │           │    │
+│  │  └──────────────────────┘  └──────┬───────┘            │           │    │
+│  └───────────────────────────────────┼────────────────────┼───────────┘    │
+│                                       │                    │                │
+│             ┌─────────────────────────┘                    │                │
+│             │ child process                                │                │
+│             ▼                                              │                │
+│  ┌──────────────────────────────────┐                      │                │
+│  │  LiteLLM Proxy (port 4000)       │                      │                │
+│  │                                  │                      │                │
+│  │  ┌────────────────────────────┐  │                      │                │
+│  │  │  DefenseClaw Guardrail     │  │                      │                │
+│  │  │  (Python module)           │  │                      │                │
+│  │  │                            │  │                      │                │
+│  │  │  pre_call:  prompt scan    │  │                      │                │
+│  │  │  post_call: response scan  │  │                      │                │
+│  │  │  mode: observe | action    │  │                      │                │
+│  │  └────────────────────────────┘  │                      │                │
+│  └──────────┬───────────────────────┘                      │                │
+│             │ proxied LLM API calls                        │                │
+│             ▼                                              │                │
+│  ┌──────────────────────┐    WebSocket (events + RPC)      │                │
+│  │  LLM Provider        │◄────────────────────────────────┘                │
+│  │  (Anthropic, OpenAI, │                                                  │
+│  │   Google, etc.)      │                                                  │
+│  └──────────────────────┘                                                  │
+│                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
 │  │                      OpenClaw Gateway                                │    │
 │  │                                                                      │    │
@@ -59,6 +80,9 @@ enforcement, and auditing across existing tools without replacing any component.
 │  │     exec.approval.requested          config.patch                    │    │
 │  │     skill.install / uninstall        [future: mcp.disconnect]        │    │
 │  │     mcp.connect / disconnect                                         │    │
+│  │                                                                      │    │
+│  │   LLM traffic routed through LiteLLM proxy via openclaw.json        │    │
+│  │   provider config (baseUrl → http://localhost:4000)                  │    │
 │  └──────────────────────────┬───────────────────────────────────────────┘    │
 │                              │                                               │
 │                              ▼                                               │
@@ -123,6 +147,7 @@ subsystems.
 | Event subscription | Subscribes to all OpenClaw gateway events (`tool_call`, `tool_result`, `exec.approval.requested`, etc.) |
 | Command dispatch | Sends RPC commands to OpenClaw: `exec.approval.resolve`, `skills.update`, `config.patch` |
 | Policy engine | Runs admission gate: block list → allow list → scan → verdict |
+| LLM guardrail management | Spawns and supervises LiteLLM proxy as a child process; restarts on crash |
 | Audit / SIEM | Logs all events to SQLite, forwards to Splunk HEC (batch or real-time) |
 | DB access | Full read/write to SQLite — audit events, scan results, block/allow lists, inventory |
 
@@ -138,7 +163,32 @@ and plugins (read/write via orchestrator REST API).
 | Block/allow lists | CLI | Orchestrator (admission gate) |
 | Skill inventory (AIBOM) | CLI | Orchestrator, plugins, TUI |
 
+### 5. LLM Guardrail (LiteLLM + Python module)
+
+The guardrail intercepts all LLM traffic between OpenClaw and the upstream
+provider. It runs as a LiteLLM proxy with a custom guardrail module loaded.
+The orchestrator manages the LiteLLM process as a supervised child.
+
+| Responsibility | Detail |
+|----------------|--------|
+| Prompt inspection | Scans every prompt for injection attacks, secrets, PII, data exfiltration patterns before it reaches the LLM |
+| Response inspection | Scans every LLM response for leaked secrets, tool call anomalies |
+| Observe mode | Logs findings with colored output, never blocks (default, recommended to start) |
+| Action mode | Blocks prompts/responses that match security policies by raising exceptions |
+| Transparent proxy | OpenClaw sees a standard OpenAI-compatible API; no agent code changes required |
+
+**How it connects:**
+
+1. `defenseclaw setup guardrail` configures the model, mode, and port
+2. OpenClaw's `openclaw.json` is patched to route LLM calls through `http://localhost:4000`
+3. The orchestrator spawns LiteLLM as a child process with the guardrail module on `PYTHONPATH`
+4. LiteLLM proxies requests to the real LLM provider, invoking the guardrail on every call
+
+See `docs/GUARDRAIL.md` for the full data flow.
+
 ## Data Flow
+
+### Scan and Enforcement Flow
 
 ```
                 CLI (scan)                    Plugin (hook)
@@ -163,6 +213,42 @@ and plugins (read/write via orchestrator REST API).
                   Action applied (e.g. skill
                   disabled, approval denied,
                   config patched)
+```
+
+### LLM Traffic Inspection Flow
+
+```
+  OpenClaw Agent                LiteLLM Proxy               LLM Provider
+       │                     (localhost:4000)              (Anthropic, etc.)
+       │                            │                            │
+       │  1. LLM API request        │                            │
+       │  (OpenAI-compatible)       │                            │
+       ├───────────────────────────►│                            │
+       │                            │                            │
+       │                    2. pre_call guardrail                │
+       │                       scans prompt for:                 │
+       │                       - injection attacks               │
+       │                       - secrets / PII                   │
+       │                       - exfiltration patterns           │
+       │                            │                            │
+       │                      [action mode: block if flagged]    │
+       │                            │                            │
+       │                            │  3. Forward to provider    │
+       │                            ├───────────────────────────►│
+       │                            │                            │
+       │                            │  4. LLM response           │
+       │                            │◄───────────────────────────┤
+       │                            │                            │
+       │                    5. post_call guardrail               │
+       │                       scans response for:               │
+       │                       - leaked secrets                  │
+       │                       - tool call anomalies             │
+       │                            │                            │
+       │                      [action mode: block if flagged]    │
+       │                            │                            │
+       │  6. Response returned      │                            │
+       │◄───────────────────────────┤                            │
+       │                            │                            │
 ```
 
 ### Admission Gate
@@ -221,52 +307,39 @@ writes the sandbox policy YAML; OpenShell enforces it.
   include filesystem watchers + process monitoring (best-effort), or
   accepting that macOS is scan-only with no runtime enforcement.
 
-### 2. Runtime Firewall — Message Inspection
+### 2. Runtime Firewall — Message Inspection (Resolved)
 
-All messages flowing through OpenClaw need to be inspected for prompt
-injection, data exfiltration, and tool misuse. This could be implemented as
-an OpenClaw plugin hook, inside the orchestrator, or as a combination.
+**Decision:** Dual-layer interception using a LiteLLM proxy for LLM traffic
+and OpenClaw plugin hooks for tool call monitoring.
 
-**Questions to resolve:**
+**Architecture:**
 
-- **Hook vs. orchestrator vs. hybrid:** A plugin hook has access to the
-  message before the LLM processes it (pre-LLM) and after (post-LLM),
-  but adds latency to the chat loop. The orchestrator already receives
-  `tool_call` and `tool_result` events via WebSocket, but these arrive
-  after-the-fact. A hybrid approach could use hooks for blocking
-  (pre-execution) and the orchestrator for async analysis + alerting.
+- **LLM traffic (prompts + completions):** Intercepted by a LiteLLM proxy
+  running as a child process of the orchestrator. A custom guardrail Python
+  module (`defenseclaw_guardrail.py`) is loaded into LiteLLM and invoked on
+  every `pre_call` and `post_call`. OpenClaw's `openclaw.json` is patched
+  to route all LLM API calls through `http://localhost:4000` instead of
+  directly to the provider. This is transparent to the agent — no code changes.
 
-- **Prompt injection detection:** Where does the classifier run? Options:
-  (a) lightweight regex/heuristic in the hook for low-latency blocking,
-  (b) call out to Cisco AI Defense cloud API for ML-based detection,
-  (c) local model inference on DGX Spark. Trade-offs: latency vs. accuracy
-  vs. offline capability.
+- **Tool calls:** The orchestrator already receives `tool_call`, `tool_result`,
+  and `exec.approval.requested` events via WebSocket. Dangerous command
+  detection runs in the `EventRouter`. The OpenClaw plugin provides additional
+  `before_tool_call` hooks for pre-execution interception.
 
-- **Data exfiltration detection:** What signals indicate exfiltration?
-  Candidates: (a) tool_call args containing file paths outside workspace,
-  (b) outbound HTTP requests to non-allowlisted domains (needs OpenShell
-  network telemetry or proxy), (c) large data payloads in tool results,
-  (d) base64-encoded content in messages. Where is the policy defined —
-  in DefenseClaw config or in OpenShell policy YAML?
+- **Two modes:** `observe` (log findings, never block — default) and `action`
+  (block flagged prompts/responses by raising exceptions). Mode is set via
+  `DEFENSECLAW_GUARDRAIL_MODE` env var, injected by the orchestrator.
 
-- **Tool call inspection:** The orchestrator already pattern-matches
-  dangerous commands (`curl`, `wget`, `rm -rf /`, etc.) in the
-  `EventRouter`. Should this be extended to a full tool-call policy engine
-  that can: (a) allowlist specific tools per skill, (b) restrict tool
-  arguments (e.g., `shell` tool can only run commands matching a pattern),
-  (c) rate-limit tool calls per skill/session? And should this policy be
-  enforced pre-execution (via `exec.approval.requested` hook) or
-  post-execution (via `tool_result` analysis)?
+- **Detection patterns:** Built-in pattern matching for prompt injection,
+  secrets/PII, and data exfiltration. Future: Cisco AI Defense cloud API
+  for ML-based detection.
 
-- **Blocking vs. alerting:** Which inspection results should block execution
-  (synchronous, in the critical path) vs. alert only (asynchronous, logged
-  to SIEM)? Blocking adds latency and risks false positives interrupting
-  legitimate work. Alerting allows forensic review but doesn't prevent harm.
+**Why not a pure OpenClaw plugin hook?** OpenClaw's `message_sending` hook
+is broken (issue #26422) — outbound messages never fire across any delivery
+path. The LiteLLM proxy approach bypasses this entirely by sitting between
+OpenClaw and the LLM provider at the network level.
 
-- **Latency budget:** What is the acceptable added latency per message for
-  runtime inspection? The `exec.approval.requested` path already has a
-  synchronous gate — adding inspection there must complete within the
-  approval timeout window.
+See `docs/GUARDRAIL.md` for the complete data flow and configuration.
 
 ## Cross-Platform Behavior
 
@@ -279,6 +352,7 @@ an OpenClaw plugin hook, inside the orchestrator, or as a combination.
 | Quarantine | Files moved + sandbox policy | Files moved only |
 | OpenShell sandbox | Active | Not available |
 | Network enforcement | Via OpenShell | Not enforced |
+| LLM guardrail | Full (LiteLLM proxy + guardrail) | Full (LiteLLM proxy + guardrail) |
 | Runtime firewall | Full (hook + orchestrator) | Orchestrator-only (no sandbox telemetry) |
 | Audit log + SIEM | Full | Full |
 
@@ -312,11 +386,19 @@ requires only a new case in `internal/config/claw.go`.
 │   CLI   │───────────▶│              │──────────────▶│   OpenClaw   │
 │ (Python)│            │ Orchestrator │               │   Gateway    │
 └─────────┘            │   (Go)       │◀──────────────│              │
-                        │              │  events        └──────────────┘
-┌─────────┐    REST     │              │
-│ Plugins │───────────▶│              │───────▶  SIEM (Splunk HEC)
-│ (JS/TS) │            │              │
-└─────────┘            │              │
-                        │              │◀──────▶  SQLite DB
-                        └──────────────┘
+                        │              │  events        └──────┬───────┘
+┌─────────┐    REST     │              │                       │
+│ Plugins │───────────▶│              │───────▶  SIEM          │ LLM API calls
+│ (JS/TS) │            │              │                       │ (OpenAI format)
+└─────────┘            │              │◀──────▶  SQLite DB    │
+                        │              │                       ▼
+                        │   spawns     │               ┌──────────────┐
+                        │   child ────────────────────▶│   LiteLLM    │
+                        └──────────────┘               │   Proxy      │
+                                                       │  + Guardrail │
+                                                       └──────┬───────┘
+                                                              │
+                                                              ▼
+                                                       LLM Provider
+                                                    (Anthropic, OpenAI…)
 ```

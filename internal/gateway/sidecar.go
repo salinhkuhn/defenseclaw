@@ -55,12 +55,12 @@ func NewSidecar(cfg *config.Config, store *audit.Store, logger *audit.Logger, sh
 // in its own goroutine so that a gateway disconnect does not stop the watcher
 // or API server. Run blocks until ctx is cancelled, then shuts everything down.
 func (s *Sidecar) Run(ctx context.Context) error {
-	fmt.Fprintf(os.Stderr, "[sidecar] starting subsystems (auto_approve=%v watcher=%v api_port=%d)\n",
-		s.cfg.Gateway.AutoApprove, s.cfg.Gateway.Watcher.Enabled, s.cfg.Gateway.APIPort)
+	fmt.Fprintf(os.Stderr, "[sidecar] starting subsystems (auto_approve=%v watcher=%v api_port=%d guardrail=%v)\n",
+		s.cfg.Gateway.AutoApprove, s.cfg.Gateway.Watcher.Enabled, s.cfg.Gateway.APIPort, s.cfg.Guardrail.Enabled)
 	_ = s.logger.LogAction("sidecar-start", "", "starting all subsystems")
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, 3)
+	errCh := make(chan error, 4)
 
 	// Goroutine 1: Gateway connection loop (always runs)
 	wg.Add(1)
@@ -88,6 +88,16 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		defer wg.Done()
 		if err := s.runAPI(ctx); err != nil && ctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "[sidecar] api server exited with error: %v\n", err)
+			errCh <- err
+		}
+	}()
+
+	// Goroutine 4: LiteLLM guardrail proxy (opt-in via config)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := s.runGuardrail(ctx); err != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "[sidecar] guardrail exited with error: %v\n", err)
 			errCh <- err
 		}
 	}()
@@ -263,6 +273,12 @@ func (s *Sidecar) handleAdmissionResult(r watcher.AdmissionResult) {
 		_ = s.logger.LogAction("sidecar-watcher-disable", r.Event.Name,
 			fmt.Sprintf("auto-disabled via gateway after verdict=%s", r.Verdict))
 	}
+}
+
+// runGuardrail starts the LiteLLM proxy child process when guardrail is enabled.
+func (s *Sidecar) runGuardrail(ctx context.Context) error {
+	llm := NewLiteLLMProcess(&s.cfg.Guardrail, s.logger, s.health)
+	return llm.Run(ctx)
 }
 
 // runAPI starts the REST API server.

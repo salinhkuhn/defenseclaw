@@ -52,6 +52,9 @@ func TestNewSidecarHealthInitialState(t *testing.T) {
 	if snap.API.State != StateStarting {
 		t.Errorf("API.State = %q, want %q", snap.API.State, StateStarting)
 	}
+	if snap.Guardrail.State != StateDisabled {
+		t.Errorf("Guardrail.State = %q, want %q", snap.Guardrail.State, StateDisabled)
+	}
 	if snap.StartedAt.IsZero() {
 		t.Error("StartedAt should not be zero")
 	}
@@ -111,12 +114,45 @@ func TestSidecarHealthSetAPI(t *testing.T) {
 	}
 }
 
+func TestSidecarHealthSetGuardrail(t *testing.T) {
+	h := NewSidecarHealth()
+
+	snap := h.Snapshot()
+	if snap.Guardrail.State != StateDisabled {
+		t.Errorf("Guardrail.State = %q, want %q (initial)", snap.Guardrail.State, StateDisabled)
+	}
+
+	h.SetGuardrail(StateStarting, "", map[string]interface{}{"port": 4000, "mode": "observe"})
+	snap = h.Snapshot()
+	if snap.Guardrail.State != StateStarting {
+		t.Errorf("Guardrail.State = %q, want %q", snap.Guardrail.State, StateStarting)
+	}
+	if snap.Guardrail.Details["port"] != 4000 {
+		t.Errorf("Guardrail.Details[port] = %v, want 4000", snap.Guardrail.Details["port"])
+	}
+
+	h.SetGuardrail(StateRunning, "", map[string]interface{}{"port": 4000, "mode": "observe"})
+	snap = h.Snapshot()
+	if snap.Guardrail.State != StateRunning {
+		t.Errorf("Guardrail.State = %q, want %q", snap.Guardrail.State, StateRunning)
+	}
+
+	h.SetGuardrail(StateError, "process exited", nil)
+	snap = h.Snapshot()
+	if snap.Guardrail.State != StateError {
+		t.Errorf("Guardrail.State = %q, want %q", snap.Guardrail.State, StateError)
+	}
+	if snap.Guardrail.LastError != "process exited" {
+		t.Errorf("Guardrail.LastError = %q, want %q", snap.Guardrail.LastError, "process exited")
+	}
+}
+
 func TestSidecarHealthConcurrency(t *testing.T) {
 	h := NewSidecarHealth()
 	var wg sync.WaitGroup
 
 	for i := 0; i < 100; i++ {
-		wg.Add(3)
+		wg.Add(4)
 		go func() {
 			defer wg.Done()
 			h.SetGateway(StateRunning, "", nil)
@@ -124,6 +160,10 @@ func TestSidecarHealthConcurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			h.SetWatcher(StateRunning, "", nil)
+		}()
+		go func() {
+			defer wg.Done()
+			h.SetGuardrail(StateRunning, "", nil)
 		}()
 		go func() {
 			defer wg.Done()
@@ -170,6 +210,127 @@ func TestSidecarHealthSinceUpdates(t *testing.T) {
 
 	if !snap2.Gateway.Since.After(t1) {
 		t.Error("Since should advance after SetGateway")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LiteLLM process manager tests
+// ---------------------------------------------------------------------------
+
+func TestLiteLLMProcessDisabled(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	_ = store
+
+	cfg := &config.GuardrailConfig{Enabled: false}
+	health := NewSidecarHealth()
+	llm := NewLiteLLMProcess(cfg, logger, health)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := llm.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run() returned error for disabled guardrail: %v", err)
+	}
+
+	snap := health.Snapshot()
+	if snap.Guardrail.State != StateDisabled {
+		t.Errorf("Guardrail.State = %q, want %q", snap.Guardrail.State, StateDisabled)
+	}
+}
+
+func TestLiteLLMProcessBinaryNotFound(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	_ = store
+
+	cfg := &config.GuardrailConfig{
+		Enabled:       true,
+		Mode:          "observe",
+		Port:          14000,
+		LiteLLMConfig: filepath.Join(t.TempDir(), "litellm.yaml"),
+		GuardrailDir:  t.TempDir(),
+	}
+	health := NewSidecarHealth()
+	llm := NewLiteLLMProcess(cfg, logger, health)
+
+	// Override PATH so litellm is definitely not found
+	t.Setenv("PATH", t.TempDir())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := llm.Run(ctx)
+	if err == nil {
+		t.Fatal("Run() should return error when binary not found")
+	}
+
+	snap := health.Snapshot()
+	if snap.Guardrail.State != StateError {
+		t.Errorf("Guardrail.State = %q, want %q", snap.Guardrail.State, StateError)
+	}
+}
+
+func TestLiteLLMProcessMissingConfig(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	_ = store
+
+	tmpDir := t.TempDir()
+
+	// Create a fake litellm binary
+	fakeBin := filepath.Join(tmpDir, "litellm")
+	if err := os.WriteFile(fakeBin, []byte("#!/bin/sh\nexit 0"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmpDir)
+
+	cfg := &config.GuardrailConfig{
+		Enabled:       true,
+		Mode:          "observe",
+		Port:          14000,
+		LiteLLMConfig: filepath.Join(tmpDir, "nonexistent.yaml"),
+		GuardrailDir:  tmpDir,
+	}
+	health := NewSidecarHealth()
+	llm := NewLiteLLMProcess(cfg, logger, health)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := llm.Run(ctx)
+	if err == nil {
+		t.Fatal("Run() should return error when config file missing")
+	}
+
+	snap := health.Snapshot()
+	if snap.Guardrail.State != StateError {
+		t.Errorf("Guardrail.State = %q, want %q", snap.Guardrail.State, StateError)
+	}
+}
+
+func TestLiteLLMBuildEnv(t *testing.T) {
+	cfg := &config.GuardrailConfig{
+		GuardrailDir: "/test/guardrails",
+		Mode:         "action",
+	}
+	llm := &LiteLLMProcess{cfg: cfg}
+
+	env := llm.buildEnv()
+
+	var pythonPath, guardrailMode string
+	for _, e := range env {
+		if strings.HasPrefix(e, "PYTHONPATH=") {
+			pythonPath = strings.TrimPrefix(e, "PYTHONPATH=")
+		}
+		if strings.HasPrefix(e, "DEFENSECLAW_GUARDRAIL_MODE=") {
+			guardrailMode = strings.TrimPrefix(e, "DEFENSECLAW_GUARDRAIL_MODE=")
+		}
+	}
+
+	if !strings.HasPrefix(pythonPath, "/test/guardrails") {
+		t.Errorf("PYTHONPATH should start with guardrail dir, got %q", pythonPath)
+	}
+	if guardrailMode != "action" {
+		t.Errorf("DEFENSECLAW_GUARDRAIL_MODE = %q, want %q", guardrailMode, "action")
 	}
 }
 

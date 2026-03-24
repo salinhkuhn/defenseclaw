@@ -81,7 +81,9 @@ jobs:
       - run: uv sync
       - run: uv run pip install pip-audit
       - run: uv export --no-hashes -o /tmp/requirements.txt
-      - run: uv run pip-audit -r /tmp/requirements.txt
+      # TODO: Remove --ignore-vuln CVE-2026-4539 once pygments >= 2.19.3 is released
+      # CVE-2026-4539: Low severity ReDoS in AdlLexer (local attack vector only)
+      - run: uv run pip-audit --ignore-vuln CVE-2026-4539 -r /tmp/requirements.txt
 
   ts-build-test:
     name: TypeScript Build & Test

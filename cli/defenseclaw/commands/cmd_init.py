@@ -59,6 +59,9 @@ def init_cmd(app: AppContext, skip_install: bool) -> None:
     _install_scanners(defaults, logger, skip_install)
 
     click.echo()
+    _install_guardrail(defaults, logger, skip_install)
+
+    click.echo()
     if shutil.which(defaults.openshell.binary):
         click.echo("  OpenShell: found")
     elif env == "macos":
@@ -96,6 +99,70 @@ def _install_scanners(cfg, logger, skip: bool) -> None:
         else:
             click.echo(" failed")
             click.echo(f"    install manually: uv tool install {pkg}")
+
+
+def _install_guardrail(cfg, logger, skip: bool) -> None:
+    """Install LiteLLM proxy and copy the guardrail module."""
+    if skip:
+        click.echo("  LiteLLM: skipped (--skip-install)")
+        return
+
+    if shutil.which("litellm"):
+        click.echo("  LiteLLM: already installed")
+    else:
+        click.echo("  LiteLLM: installing...", nl=False)
+        if _install_litellm():
+            click.echo(" done")
+            logger.log_action("install-dep", "litellm", "package=litellm[proxy]")
+        else:
+            click.echo(" failed")
+            click.echo("    install manually: uv tool install 'litellm[proxy]'")
+
+    guardrail_dir = cfg.guardrail.guardrail_dir
+    os.makedirs(guardrail_dir, exist_ok=True)
+
+    from defenseclaw.guardrail import install_guardrail_module
+
+    repo_source = _find_guardrail_source()
+    if repo_source:
+        install_guardrail_module(repo_source, guardrail_dir)
+        click.echo(f"  Guardrail module: installed to {guardrail_dir}")
+        logger.log_action("install-dep", "guardrail", f"dir={guardrail_dir}")
+    else:
+        click.echo("  Guardrail module: not found in package (run setup guardrail later)")
+
+
+def _find_guardrail_source() -> str | None:
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "guardrails", "defenseclaw_guardrail.py"),
+    ]
+    try:
+        pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        repo_root = os.path.dirname(os.path.dirname(pkg_dir))
+        candidates.append(os.path.join(repo_root, "guardrails", "defenseclaw_guardrail.py"))
+    except Exception:
+        pass
+
+    for c in candidates:
+        resolved = os.path.realpath(c)
+        if os.path.isfile(resolved):
+            return resolved
+    return None
+
+
+def _install_litellm() -> bool:
+    _ensure_uv()
+    uv = shutil.which("uv")
+    if not uv:
+        return False
+    try:
+        result = subprocess.run(
+            [uv, "tool", "install", "--python", "3.13", "litellm[proxy]"],
+            capture_output=True, text=True,
+        )
+        return result.returncode == 0 or "already installed" in result.stderr
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
 
 
 def _ensure_uv() -> None:

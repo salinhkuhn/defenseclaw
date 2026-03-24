@@ -29,6 +29,7 @@ type HealthSnapshot struct {
 	Gateway   SubsystemHealth `json:"gateway"`
 	Watcher   SubsystemHealth `json:"watcher"`
 	API       SubsystemHealth `json:"api"`
+	Guardrail SubsystemHealth `json:"guardrail"`
 }
 
 type SidecarHealth struct {
@@ -36,6 +37,7 @@ type SidecarHealth struct {
 	gateway   SubsystemHealth
 	watcher   SubsystemHealth
 	api       SubsystemHealth
+	guardrail SubsystemHealth
 	startedAt time.Time
 }
 
@@ -46,6 +48,7 @@ func NewSidecarHealth() *SidecarHealth {
 		gateway:   initial,
 		watcher:   initial,
 		api:       initial,
+		guardrail: SubsystemHealth{State: StateDisabled, Since: now},
 		startedAt: now,
 	}
 }
@@ -83,6 +86,17 @@ func (h *SidecarHealth) SetAPI(state SubsystemState, lastErr string, details map
 	}
 }
 
+func (h *SidecarHealth) SetGuardrail(state SubsystemState, lastErr string, details map[string]interface{}) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.guardrail = SubsystemHealth{
+		State:     state,
+		Since:     time.Now(),
+		LastError: lastErr,
+		Details:   details,
+	}
+}
+
 func (h *SidecarHealth) Snapshot() HealthSnapshot {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -92,5 +106,6 @@ func (h *SidecarHealth) Snapshot() HealthSnapshot {
 		Gateway:   h.gateway,
 		Watcher:   h.watcher,
 		API:       h.api,
+		Guardrail: h.guardrail,
 	}
 }

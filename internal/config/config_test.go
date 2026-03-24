@@ -62,6 +62,26 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigGuardrail(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if cfg.Guardrail.Enabled {
+		t.Error("guardrail should be disabled by default")
+	}
+	if cfg.Guardrail.Mode != "observe" {
+		t.Errorf("expected guardrail mode %q, got %q", "observe", cfg.Guardrail.Mode)
+	}
+	if cfg.Guardrail.Port != 4000 {
+		t.Errorf("expected guardrail port 4000, got %d", cfg.Guardrail.Port)
+	}
+	if cfg.Guardrail.GuardrailDir != cfg.DataDir {
+		t.Errorf("guardrail_dir should equal data_dir, got %q vs %q", cfg.Guardrail.GuardrailDir, cfg.DataDir)
+	}
+	if cfg.Guardrail.LiteLLMConfig == "" {
+		t.Error("litellm_config should not be empty")
+	}
+}
+
 func TestDefaultSkillActions(t *testing.T) {
 	sa := DefaultSkillActions()
 

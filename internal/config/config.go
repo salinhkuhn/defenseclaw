@@ -34,6 +34,7 @@ type Config struct {
 	OpenShell     OpenShellConfig    `mapstructure:"openshell"      yaml:"openshell"`
 	Watch         WatchConfig        `mapstructure:"watch"          yaml:"watch"`
 	Firewall      FirewallConfig     `mapstructure:"firewall"       yaml:"firewall"`
+	Guardrail     GuardrailConfig    `mapstructure:"guardrail"      yaml:"guardrail"`
 	Splunk        SplunkConfig       `mapstructure:"splunk"         yaml:"splunk"`
 	Gateway       GatewayConfig      `mapstructure:"gateway"        yaml:"gateway"`
 	SkillActions  SkillActionsConfig `mapstructure:"skill_actions"  yaml:"skill_actions"`
@@ -103,6 +104,18 @@ type GatewayWatcherSkillConfig struct {
 type GatewayWatcherConfig struct {
 	Enabled bool                      `mapstructure:"enabled" yaml:"enabled"`
 	Skill   GatewayWatcherSkillConfig `mapstructure:"skill"   yaml:"skill"`
+}
+
+type GuardrailConfig struct {
+	Enabled       bool   `mapstructure:"enabled"         yaml:"enabled"`
+	Mode          string `mapstructure:"mode"             yaml:"mode"`
+	Port          int    `mapstructure:"port"             yaml:"port"`
+	Model         string `mapstructure:"model"            yaml:"model"`
+	ModelName     string `mapstructure:"model_name"       yaml:"model_name"`
+	APIKeyEnv     string `mapstructure:"api_key_env"      yaml:"api_key_env"`
+	GuardrailDir  string `mapstructure:"guardrail_dir"    yaml:"guardrail_dir"`
+	LiteLLMConfig string `mapstructure:"litellm_config"   yaml:"litellm_config"`
+	OriginalModel string `mapstructure:"original_model"   yaml:"original_model"`
 }
 
 type GatewayConfig struct {
@@ -254,6 +267,12 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("skill_actions.info.file", string(FileActionNone))
 	viper.SetDefault("skill_actions.info.runtime", string(RuntimeEnable))
 	viper.SetDefault("skill_actions.info.install", string(InstallNone))
+
+	viper.SetDefault("guardrail.enabled", false)
+	viper.SetDefault("guardrail.mode", "observe")
+	viper.SetDefault("guardrail.port", 4000)
+	viper.SetDefault("guardrail.guardrail_dir", dataDir)
+	viper.SetDefault("guardrail.litellm_config", filepath.Join(dataDir, "litellm_config.yaml"))
 
 	viper.SetDefault("gateway.host", "127.0.0.1")
 	viper.SetDefault("gateway.port", 18789)

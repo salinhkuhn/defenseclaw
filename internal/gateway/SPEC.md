@@ -19,18 +19,21 @@ local REST API for CLI and plugin integration.
                 │       │       │ PolicyEngine│                   │
                 │       │       └─────────────┘                   │
                 │       │                                         │
-                │  ┌────┴───────┐  ┌────────────┐                 │
-                │  │ APIServer  │  │  Watcher   │                 │
-                │  │ (REST API) │  │ (fsnotify) │                 │
-                │  └────────────┘  └────────────┘                 │
- localhost:     │       ▲                │                         │
- api_port   ◄──┼───────┘                │ handleAdmissionResult   │
-                │                        ▼                         │
-                │               client.DisableSkill()             │
+                │  ┌────┴───────┐  ┌────────────┐  ┌───────────┐ │
+                │  │ APIServer  │  │  Watcher   │  │  LiteLLM  │ │
+                │  │ (REST API) │  │ (fsnotify) │  │  Process  │ │
+                │  └────────────┘  └────────────┘  │  Manager  │ │
+ localhost:     │       ▲                │          └─────┬─────┘ │
+ api_port   ◄──┼───────┘                │               │        │
+                │                        │  admission     │ spawn  │
+                │                        ▼               ▼        │
+                │              client.DisableSkill()  LiteLLM     │
+                │                                     proxy       │
+                │                                  (port 4000)    │
                 └──────────────────────────────────────────────────┘
 ```
 
-The Sidecar runs three independent subsystems as goroutines:
+The Sidecar runs four independent subsystems as goroutines:
 
 1. **Gateway connection loop** — maintains the WebSocket link with automatic
    reconnection and exponential backoff.
@@ -38,15 +41,18 @@ The Sidecar runs three independent subsystems as goroutines:
    installs and runs the admission gate. Opt-in via config.
 3. **REST API server** — exposes `/health`, `/status`, and skill/config
    mutation endpoints on localhost.
+4. **LiteLLM guardrail** — spawns and supervises the LiteLLM proxy as a
+   child process for LLM traffic inspection. Opt-in via config.
 
 Each subsystem is fault-isolated: a gateway disconnect does not stop the
-watcher or API server. Shutdown is coordinated via context cancellation.
+watcher, API server, or guardrail. Shutdown is coordinated via context
+cancellation.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `sidecar.go` | Top-level orchestrator. Creates client, router, watcher; runs all three subsystems; handles watcher verdicts. |
+| `sidecar.go` | Top-level orchestrator. Creates client, router, watcher; runs all four subsystems; handles watcher verdicts. |
 | `client.go` | WebSocket client. Protocol v3 handshake, read loop, request/response multiplexing, reconnection with backoff. |
 | `device.go` | Ed25519 device identity. Key generation, PEM persistence, challenge-response signing. |
 | `frames.go` | Wire format types. Request, response, event frames and all payload structs. |
@@ -54,6 +60,7 @@ watcher or API server. Shutdown is coordinated via context cancellation.
 | `rpc.go` | High-level RPC methods. `DisableSkill`, `EnableSkill`, `GetConfig`, `PatchConfig`, `GetStatus`, `GetToolsCatalog`, `ResolveApproval`. |
 | `api.go` | Local REST API server. Health, status, skill enable/disable, config patch endpoints. |
 | `health.go` | Subsystem health tracker. Thread-safe state machine with snapshots for the API. |
+| `litellm.go` | LiteLLM process manager. Spawns, monitors, and restarts the LiteLLM proxy child process. |
 
 ## WebSocket Protocol (v3)
 
@@ -196,6 +203,76 @@ but no gateway action is taken.
 Non-skill events (e.g. MCP installs) and non-blocking verdicts (clean,
 allowed, warning) are ignored by the admission handler.
 
+## LiteLLM Guardrail
+
+When `guardrail.enabled` is `true`, the sidecar spawns a LiteLLM proxy as
+a supervised child process. The proxy loads the DefenseClaw guardrail Python
+module and inspects all LLM traffic flowing between OpenClaw and the
+upstream provider.
+
+### Process Lifecycle
+
+1. **Startup**: `LiteLLMProcess.Run()` locates the `litellm` binary (PATH,
+   `~/.local/bin`, `~/.cargo/bin`), verifies the config file exists, then
+   starts the process with `--config`, `--port`, and `--detailed_debug` flags.
+2. **Environment**: The child process inherits the parent's environment plus:
+   - `PYTHONPATH` prepended with the guardrail module directory so LiteLLM
+     can import `defenseclaw_guardrail`
+   - `DEFENSECLAW_GUARDRAIL_MODE` set to the configured mode (`observe`
+     or `action`)
+3. **Health check**: A background goroutine polls
+   `GET http://127.0.0.1:{port}/health/liveliness` every second. Once it
+   returns 200, the health state transitions to `running`. Times out after
+   30 seconds.
+4. **Output streaming**: stdout and stderr of the LiteLLM process are
+   streamed line-by-line to the sidecar's stderr with `[litellm:out]` and
+   `[litellm:err]` prefixes.
+5. **Crash recovery**: If the process exits unexpectedly, the sidecar
+   restarts it with exponential backoff (1s → 2s → 4s → ... → 30s max).
+6. **Shutdown**: On context cancellation (SIGINT/SIGTERM), the child process
+   is killed via `exec.CommandContext`.
+
+### Guardrail Module
+
+The Python guardrail module (`guardrails/defenseclaw_guardrail.py`) is a
+LiteLLM `CustomGuardrail` subclass with two hooks:
+
+- **`async_pre_call_hook`**: Scans prompt messages for injection attacks,
+  secrets/PII, and data exfiltration patterns. In `action` mode, raises an
+  exception to block flagged prompts.
+- **`async_post_call_success_hook`**: Scans LLM responses for leaked secrets
+  and inspects tool calls. In `action` mode, raises to block flagged responses.
+
+All inspection is local pattern matching — no network calls in the hot path.
+The module reads its mode once from `DEFENSECLAW_GUARDRAIL_MODE` at init.
+
+### Configuration
+
+Settings live under the `guardrail` key in `~/.defenseclaw/config.yaml`:
+
+```yaml
+guardrail:
+  enabled: false
+  mode: "observe"                # observe | action
+  port: 4000                     # LiteLLM proxy port
+  model: "anthropic/claude-opus-4-5"    # upstream model
+  model_name: "claude-opus"      # alias exposed to OpenClaw
+  api_key_env: "ANTHROPIC_API_KEY"
+  guardrail_dir: "~/.defenseclaw/guardrails"
+  litellm_config: "~/.defenseclaw/litellm_config.yaml"
+  original_model: ""             # saved for revert on disable
+```
+
+### Setup and Teardown
+
+Managed via the Python CLI:
+
+- `defenseclaw setup guardrail` — interactive wizard that configures the
+  guardrail, generates `litellm_config.yaml`, copies the guardrail module,
+  and patches `openclaw.json` to route through LiteLLM.
+- `defenseclaw setup guardrail --disable` — reverts `openclaw.json` to the
+  original model and sets `guardrail.enabled = false`.
+
 ## REST API
 
 The API server binds to `127.0.0.1:{gateway.api_port}` (localhost only).
@@ -216,7 +293,7 @@ are logged to the audit store.
 
 ## Health Tracking
 
-`SidecarHealth` is a thread-safe (RWMutex) state machine tracking three
+`SidecarHealth` is a thread-safe (RWMutex) state machine tracking four
 subsystems independently:
 
 | Subsystem | States |
@@ -224,6 +301,7 @@ subsystems independently:
 | Gateway | starting → reconnecting → running → error → stopped |
 | Watcher | starting → running → disabled → error → stopped |
 | API | starting → running → error → stopped |
+| Guardrail | disabled → starting → running → error → stopped |
 
 Each state transition records a timestamp (`Since`) and optional error
 message / details map. The `Snapshot()` method returns a consistent
@@ -265,9 +343,11 @@ gateway:
   read loop (on error) and `Close()` call `signalDisconnect()`.
 - **Health tracker**: `sync.RWMutex` protects all three subsystem states.
   Writers take exclusive lock; `Snapshot()` takes read lock.
-- **Sidecar subsystems**: three independent goroutines coordinated by a
+- **Sidecar subsystems**: four independent goroutines coordinated by a
   shared context and `sync.WaitGroup`. First error is captured via a
   buffered channel.
+- **LiteLLM child process**: spawned via `exec.CommandContext` — context
+  cancellation sends SIGKILL. Stdout/stderr streamed via separate goroutines.
 
 ## Testing
 

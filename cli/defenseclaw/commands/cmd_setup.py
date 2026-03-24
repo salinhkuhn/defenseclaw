@@ -323,6 +323,394 @@ def _fetch_ssm_token(param: str, region: str, profile: str | None) -> str | None
     return None
 
 
+# ---------------------------------------------------------------------------
+# setup guardrail
+# ---------------------------------------------------------------------------
+
+@setup.command("guardrail")
+@click.option("--disable", is_flag=True, help="Disable guardrail and revert OpenClaw config")
+@click.option("--mode", "guard_mode", type=click.Choice(["observe", "action"]), default=None,
+              help="Guardrail mode")
+@click.option("--port", "guard_port", type=int, default=None, help="LiteLLM proxy port")
+@click.option("--restart", is_flag=True, help="Restart defenseclaw-gateway and openclaw gateway after setup")
+@click.option("--non-interactive", is_flag=True, help="Use flags instead of prompts")
+@pass_ctx
+def setup_guardrail(
+    app: AppContext,
+    disable: bool,
+    guard_mode, guard_port,
+    restart: bool,
+    non_interactive: bool,
+) -> None:
+    """Configure the LLM guardrail (routes LLM traffic through LiteLLM for inspection).
+
+    Routes all LLM traffic through a local LiteLLM proxy with DefenseClaw
+    guardrails attached. Every prompt and response is inspected for prompt
+    injection, secrets, PII, and data exfiltration patterns.
+
+    Two modes:
+      observe — log findings, never block (default, recommended to start)
+      action  — block prompts/responses that match security policies
+
+    Use --disable to turn off the guardrail and restore direct LLM access.
+    """
+    from defenseclaw.guardrail import (
+        generate_litellm_config,
+        install_guardrail_module,
+        patch_openclaw_config,
+        write_litellm_config,
+    )
+
+    gc = app.cfg.guardrail
+
+    if disable:
+        _disable_guardrail(app, gc, restart=restart)
+        return
+
+    if non_interactive:
+        if guard_mode is not None:
+            gc.mode = guard_mode
+        if guard_port is not None:
+            gc.port = guard_port
+        gc.enabled = True
+    else:
+        _interactive_guardrail_setup(app, gc)
+
+    if not gc.enabled:
+        click.echo("  Guardrail not enabled. Run again without declining to configure.")
+        return
+
+    # Generate LiteLLM config
+    litellm_cfg = generate_litellm_config(
+        model=gc.model,
+        model_name=gc.model_name,
+        api_key_env=gc.api_key_env,
+        port=gc.port,
+        device_key_file=app.cfg.gateway.device_key_file,
+    )
+    write_litellm_config(litellm_cfg, gc.litellm_config)
+
+    # Install guardrail module
+    repo_source = _find_guardrail_source()
+    if repo_source:
+        install_guardrail_module(repo_source, gc.guardrail_dir)
+
+    # Derive the master key for OpenClaw config
+    from defenseclaw.guardrail import _derive_master_key
+    master_key = _derive_master_key(app.cfg.gateway.device_key_file)
+
+    # Patch OpenClaw config
+    prev_model = patch_openclaw_config(
+        openclaw_config_file=app.cfg.claw.config_file,
+        model_name=gc.model_name,
+        litellm_port=gc.port,
+        master_key=master_key,
+        original_model=gc.original_model,
+    )
+    if prev_model and not gc.original_model:
+        gc.original_model = prev_model
+
+    app.cfg.save()
+
+    data_dir = os.path.dirname(gc.litellm_config) if gc.litellm_config else os.path.expanduser("~/.defenseclaw")
+    _print_guardrail_summary(gc, app.cfg.claw.config_file, restart=restart)
+
+    if restart:
+        _restart_services(data_dir)
+
+    if app.logger:
+        app.logger.log_action(
+            "setup-guardrail", "config",
+            f"mode={gc.mode} port={gc.port} model={gc.model}",
+        )
+
+
+def _interactive_guardrail_setup(app: AppContext, gc) -> None:
+    from defenseclaw.guardrail import (
+        detect_api_key_env,
+        detect_current_model,
+        model_to_litellm_name,
+    )
+
+    click.echo()
+    click.echo("  LLM Guardrail Configuration")
+    click.echo("  ────────────────────────────")
+    click.echo()
+    click.echo("  Routes all LLM traffic through a local inspection proxy.")
+    click.echo("  Every prompt and response is scanned for security issues.")
+    click.echo()
+
+    if not click.confirm("  Enable LLM guardrail?", default=True):
+        gc.enabled = False
+        return
+
+    gc.enabled = True
+
+    click.echo()
+    click.echo("  Modes:")
+    click.echo("    observe — log and alert only, never block (recommended to start)")
+    click.echo("    action  — block prompts/responses that match security policies")
+    gc.mode = click.prompt(
+        "  Mode", type=click.Choice(["observe", "action"]), default=gc.mode or "observe",
+    )
+
+    gc.port = click.prompt("  LiteLLM proxy port", default=gc.port or 4000, type=int)
+
+    # Detect current model
+    current_model, current_provider = detect_current_model(app.cfg.claw.config_file)
+    click.echo()
+
+    if current_model and not current_model.startswith("litellm/"):
+        click.echo(f"  Current OpenClaw model: {current_model}")
+        if click.confirm("  Route this model through the guardrail?", default=True):
+            gc.model = current_model
+            gc.model_name = model_to_litellm_name(current_model)
+            gc.original_model = current_model
+        else:
+            gc.model = click.prompt("  Upstream model (e.g. anthropic/claude-sonnet-4-20250514)")
+            gc.model_name = model_to_litellm_name(gc.model)
+    elif current_model and current_model.startswith("litellm/"):
+        click.echo(f"  Already routed through LiteLLM: {current_model}")
+        if gc.model:
+            click.echo(f"  Upstream model: {gc.model}")
+        else:
+            click.echo("  Upstream model not configured — need to set it.")
+            gc.model = click.prompt("  Upstream model (e.g. anthropic/claude-sonnet-4-20250514)")
+            gc.model_name = model_to_litellm_name(gc.model)
+        if not gc.original_model or gc.original_model.startswith("litellm/"):
+            gc.original_model = gc.model
+    else:
+        gc.model = click.prompt("  Upstream model (e.g. anthropic/claude-sonnet-4-20250514)")
+        gc.model_name = model_to_litellm_name(gc.model)
+
+    if not gc.model_name:
+        gc.model_name = model_to_litellm_name(gc.model)
+
+    if not gc.model or not gc.model_name:
+        click.echo("  Error: model and model_name must not be empty.")
+        gc.enabled = False
+        return
+
+    # API key env var
+    if not gc.api_key_env or _looks_like_secret(gc.api_key_env):
+        gc.api_key_env = detect_api_key_env(gc.model)
+
+    env_val = os.environ.get(gc.api_key_env, "")
+    click.echo()
+    if env_val:
+        click.echo(f"  API key env var: {gc.api_key_env} ({_mask(env_val)})")
+        if not click.confirm("  Use this env var?", default=True):
+            gc.api_key_env = _prompt_env_var_name(gc.api_key_env)
+    else:
+        click.echo(f"  API key env var: {gc.api_key_env} (not currently set in environment)")
+        click.echo("  Set it before starting the sidecar:")
+        click.echo(f"    export {gc.api_key_env}=your-key-here")
+        gc.api_key_env = _prompt_env_var_name(gc.api_key_env)
+
+
+def _disable_guardrail(app: AppContext, gc, *, restart: bool = False) -> None:
+    from defenseclaw.guardrail import restore_openclaw_config
+
+    click.echo()
+    click.echo("  Disabling LLM guardrail...")
+
+    if gc.original_model:
+        if restore_openclaw_config(app.cfg.claw.config_file, gc.original_model):
+            click.echo(f"  ✓ OpenClaw model restored to: {gc.original_model}")
+        else:
+            click.echo("  ⚠ Could not restore OpenClaw config")
+
+    gc.enabled = False
+    app.cfg.save()
+    click.echo("  ✓ Config saved")
+
+    if restart:
+        click.echo()
+        data_dir = os.path.dirname(gc.litellm_config) if gc.litellm_config else os.path.expanduser("~/.defenseclaw")
+        _restart_services(data_dir)
+    else:
+        click.echo()
+        click.echo("  Restart services for changes to take effect:")
+        click.echo("    defenseclaw-gateway restart")
+        click.echo("    openclaw gateway restart")
+        click.echo()
+        click.echo("  Or re-run with --restart:")
+        click.echo("    defenseclaw setup guardrail --disable --restart")
+    click.echo()
+
+    if app.logger:
+        app.logger.log_action("setup-guardrail", "config", "disabled")
+
+
+def _find_guardrail_source() -> str | None:
+    """Locate the guardrail module in the repo or package."""
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "guardrails", "defenseclaw_guardrail.py"),
+        os.path.join(os.path.dirname(__file__), "..", "guardrails", "defenseclaw_guardrail.py"),
+    ]
+    # Also check relative to the repo root if we can detect it
+    try:
+        pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        repo_root = os.path.dirname(os.path.dirname(pkg_dir))
+        candidates.append(os.path.join(repo_root, "guardrails", "defenseclaw_guardrail.py"))
+    except Exception:
+        pass
+
+    for c in candidates:
+        resolved = os.path.realpath(c)
+        if os.path.isfile(resolved):
+            return resolved
+    return None
+
+
+def _print_guardrail_summary(gc, openclaw_config_file: str, *, restart: bool = False) -> None:
+    click.echo()
+    click.echo("  ✓ Config saved to ~/.defenseclaw/config.yaml")
+    click.echo(f"  ✓ LiteLLM config written to {gc.litellm_config}")
+    click.echo(f"  ✓ Guardrail module installed to {gc.guardrail_dir}/defenseclaw_guardrail.py")
+    click.echo(f"  ✓ OpenClaw config patched: {openclaw_config_file}")
+    if gc.original_model:
+        click.echo(f"  ✓ Original model saved for revert: {gc.original_model}")
+    click.echo()
+
+    rows = [
+        ("mode", gc.mode),
+        ("port", str(gc.port)),
+        ("model", gc.model),
+        ("model_name", gc.model_name),
+        ("api_key_env", gc.api_key_env),
+    ]
+    for key, val in rows:
+        click.echo(f"    guardrail.{key + ':':<16s} {val}")
+    click.echo()
+
+    if not restart:
+        click.echo("  Restart services for changes to take effect:")
+        click.echo("    defenseclaw-gateway restart")
+        click.echo("    openclaw gateway restart")
+        click.echo()
+        click.echo("  Or re-run with --restart:")
+        click.echo("    defenseclaw setup guardrail --restart")
+        click.echo()
+
+    click.echo("  To disable and revert:")
+    click.echo("    defenseclaw setup guardrail --disable")
+    click.echo()
+
+
+# ---------------------------------------------------------------------------
+# Service restart helpers
+# ---------------------------------------------------------------------------
+
+def _is_pid_alive(pid_file: str) -> bool:
+    """Check if the process in the given PID file is alive (signal 0)."""
+    try:
+        with open(pid_file) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return True
+    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _restart_services(data_dir: str) -> None:
+    """Restart defenseclaw-gateway and openclaw gateway."""
+    click.echo("  Restarting services...")
+    click.echo("  ──────────────────────")
+
+    _restart_defense_gateway(data_dir)
+    _restart_openclaw_gateway()
+
+    click.echo()
+
+
+def _restart_defense_gateway(data_dir: str) -> None:
+    pid_file = os.path.join(data_dir, "gateway.pid")
+    was_running = _is_pid_alive(pid_file)
+
+    action = "restarting" if was_running else "starting"
+    click.echo(f"  defenseclaw-gateway: {action}...", nl=False)
+
+    cmd = ["defenseclaw-gateway", "restart"] if was_running else ["defenseclaw-gateway", "start"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            click.echo(" ✓")
+        else:
+            click.echo(" ✗")
+            err = (result.stderr or result.stdout or "").strip()
+            if err:
+                for line in err.splitlines()[:3]:
+                    click.echo(f"    {line}")
+    except FileNotFoundError:
+        click.echo(" ✗ (binary not found)")
+        click.echo("    Build with: make gateway")
+    except subprocess.TimeoutExpired:
+        click.echo(" ✗ (timed out)")
+
+
+def _restart_openclaw_gateway() -> None:
+    click.echo("  openclaw gateway: checking...", nl=False)
+
+    try:
+        health = subprocess.run(
+            ["openclaw", "gateway", "health"],
+            capture_output=True, text=True, timeout=15,
+        )
+        was_running = health.returncode == 0
+    except FileNotFoundError:
+        click.echo(" skipped (openclaw not found)")
+        return
+    except subprocess.TimeoutExpired:
+        click.echo(" skipped (health check timed out)")
+        return
+
+    if not was_running:
+        click.echo(" not running, skipping")
+        click.echo("    Start manually: openclaw gateway")
+        return
+
+    click.echo(" restarting...", nl=False)
+    try:
+        result = subprocess.run(
+            ["openclaw", "gateway", "restart"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            click.echo(" ✓")
+        else:
+            click.echo(" ✗")
+            err = (result.stderr or result.stdout or "").strip()
+            if err:
+                for line in err.splitlines()[:3]:
+                    click.echo(f"    {line}")
+    except subprocess.TimeoutExpired:
+        click.echo(" ✗ (timed out)")
+
+
+def _looks_like_secret(value: str) -> bool:
+    """Detect if a value looks like an actual secret rather than an env var name."""
+    if not value:
+        return False
+    prefixes = ("sk-", "sk-ant-", "sk-proj-", "ghp_", "gho_", "xoxb-", "xoxp-")
+    if any(value.startswith(p) for p in prefixes):
+        return True
+    if len(value) > 30 and not value.isupper():
+        return True
+    return False
+
+
+def _prompt_env_var_name(default: str) -> str:
+    """Prompt for an env var name, rejecting values that look like actual secrets."""
+    while True:
+        val = click.prompt("  Env var name (e.g. ANTHROPIC_API_KEY)", default=default)
+        if _looks_like_secret(val):
+            click.echo("  That looks like an actual API key, not an env var name.")
+            click.echo("  Enter the NAME of the environment variable (e.g. ANTHROPIC_API_KEY).")
+            continue
+        return val
+
+
 def _print_gateway_summary(gw) -> None:
     click.echo()
     click.echo("  Saved to ~/.defenseclaw/config.yaml")

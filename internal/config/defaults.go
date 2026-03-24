@@ -99,6 +99,12 @@ func DefaultConfig() *Config {
 			RulesFile:  filepath.Join(dataDir, "firewall.pf.conf"),
 			AnchorName: "com.defenseclaw",
 		},
+		Guardrail: GuardrailConfig{
+			Mode:          "observe",
+			Port:          4000,
+			GuardrailDir:  dataDir,
+			LiteLLMConfig: filepath.Join(dataDir, "litellm_config.yaml"),
+		},
 		Splunk: SplunkConfig{
 			HECEndpoint:   "https://localhost:8088/services/collector/event",
 			Index:         "defenseclaw",

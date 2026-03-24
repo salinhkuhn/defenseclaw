@@ -194,6 +194,19 @@ class FirewallConfig:
 
 
 @dataclass
+class GuardrailConfig:
+    enabled: bool = False
+    mode: str = "observe"           # observe | action
+    port: int = 4000
+    model: str = ""                 # upstream model, e.g. "anthropic/claude-opus-4-5"
+    model_name: str = ""            # alias exposed to OpenClaw, e.g. "claude-opus"
+    api_key_env: str = ""           # env var holding the API key, e.g. "ANTHROPIC_API_KEY"
+    guardrail_dir: str = ""         # directory containing guardrail module (must match litellm_config dir)
+    litellm_config: str = ""        # path to generated litellm_config.yaml
+    original_model: str = ""        # original OpenClaw model (for revert)
+
+
+@dataclass
 class Config:
     data_dir: str = ""
     audit_db: str = ""
@@ -206,6 +219,7 @@ class Config:
     openshell: OpenShellConfig = field(default_factory=OpenShellConfig)
     watch: WatchConfig = field(default_factory=WatchConfig)
     firewall: FirewallConfig = field(default_factory=FirewallConfig)
+    guardrail: GuardrailConfig = field(default_factory=GuardrailConfig)
     splunk: SplunkConfig = field(default_factory=SplunkConfig)
     gateway: GatewayConfig = field(default_factory=GatewayConfig)
     skill_actions: SkillActionsConfig = field(default_factory=SkillActionsConfig)
@@ -299,6 +313,25 @@ def _merge_skill_actions(raw: dict[str, Any] | None) -> SkillActionsConfig:
     )
 
 
+def _merge_guardrail(raw: dict[str, Any] | None, data_dir: str) -> GuardrailConfig:
+    if not raw:
+        return GuardrailConfig(
+            guardrail_dir=data_dir,
+            litellm_config=os.path.join(data_dir, "litellm_config.yaml"),
+        )
+    return GuardrailConfig(
+        enabled=raw.get("enabled", False),
+        mode=raw.get("mode", "observe"),
+        port=raw.get("port", 4000),
+        model=raw.get("model", ""),
+        model_name=raw.get("model_name", ""),
+        api_key_env=raw.get("api_key_env", ""),
+        guardrail_dir=raw.get("guardrail_dir", data_dir),
+        litellm_config=raw.get("litellm_config", os.path.join(data_dir, "litellm_config.yaml")),
+        original_model=raw.get("original_model", ""),
+    )
+
+
 def _merge_gateway_watcher(raw: dict[str, Any] | None) -> GatewayWatcherConfig:
     if not raw:
         return GatewayWatcherConfig()
@@ -377,6 +410,7 @@ def load() -> Config:
             rules_file=raw.get("firewall", {}).get("rules_file", os.path.join(data_dir, "firewall.pf.conf")),
             anchor_name=raw.get("firewall", {}).get("anchor_name", "com.defenseclaw"),
         ),
+        guardrail=_merge_guardrail(raw.get("guardrail"), data_dir),
         splunk=SplunkConfig(
             hec_endpoint=splunk_raw.get("hec_endpoint", "https://localhost:8088/services/collector/event"),
             hec_token=splunk_raw.get("hec_token", ""),
@@ -420,6 +454,10 @@ def default_config() -> Config:
         firewall=FirewallConfig(
             config_file=os.path.join(data_dir, "firewall.yaml"),
             rules_file=os.path.join(data_dir, "firewall.pf.conf"),
+        ),
+        guardrail=GuardrailConfig(
+            guardrail_dir=data_dir,
+            litellm_config=os.path.join(data_dir, "litellm_config.yaml"),
         ),
         gateway=GatewayConfig(
             device_key_file=os.path.join(data_dir, "device.key"),

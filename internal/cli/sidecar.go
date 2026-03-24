@@ -78,6 +78,13 @@ func runSidecar(_ *cobra.Command, _ []string) error {
 			fmt.Printf("    Skill dirs: autodiscover (from claw mode)\n")
 		}
 	}
+	if cfg.Guardrail.Enabled {
+		fmt.Printf("  Guardrail:    port=%d mode=%s\n", cfg.Guardrail.Port, cfg.Guardrail.Mode)
+		fmt.Printf("    Model:      %s → %s\n", cfg.Guardrail.Model, cfg.Guardrail.ModelName)
+		fmt.Printf("    API key:    %s\n", cfg.Guardrail.APIKeyEnv)
+	} else {
+		fmt.Printf("  Guardrail:    disabled\n")
+	}
 	fmt.Println()
 
 	sc, err := gateway.NewSidecar(cfg, auditStore, auditLog, shell)
@@ -128,6 +135,7 @@ func runSidecarStatus(_ *cobra.Command, _ []string) error {
 	printSubsystem("Gateway", snap.Gateway)
 	printSubsystem("Watcher", snap.Watcher)
 	printSubsystem("API", snap.API)
+	printSubsystem("Guardrail", snap.Guardrail)
 
 	return nil
 }
