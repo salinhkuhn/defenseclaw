@@ -107,14 +107,17 @@ class TestMCPScannerWrapper(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 1)
 
     @patch("defenseclaw.scanner.mcp.subprocess.run")
-    def test_scan_invalid_json(self, mock_run):
+    def test_scan_nonzero_exit_reports_error(self, mock_run):
         from defenseclaw.scanner.mcp import MCPScannerWrapper
 
-        mock_run.return_value = MagicMock(returncode=1, stdout="ERROR: something", stderr="")
+        mock_run.return_value = MagicMock(returncode=1, stdout="ERROR: something", stderr="crash details")
         s = MCPScannerWrapper()
         result = s.scan("http://localhost:3000")
 
-        self.assertTrue(result.is_clean())
+        self.assertFalse(result.is_clean())
+        self.assertEqual(len(result.findings), 1)
+        self.assertEqual(result.findings[0].severity, "ERROR")
+        self.assertIn("exited with code 1", result.findings[0].title)
 
 
 class TestSkillScannerWrapper(unittest.TestCase):

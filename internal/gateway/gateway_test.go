@@ -1606,6 +1606,226 @@ func TestAPIConfigPatchMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestAPIScanResultHandlerLogsResult(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), store: store, logger: logger}
+
+	body := []byte(`{
+		"scanner":"plugin-scanner",
+		"target":"/tmp/plugin",
+		"timestamp":"2026-03-24T12:00:00Z",
+		"findings":[
+			{
+				"id":"finding-1",
+				"severity":"HIGH",
+				"title":"dangerous permission",
+				"description":"test finding",
+				"location":"package.json",
+				"remediation":"remove it",
+				"scanner":"plugin-scanner",
+				"tags":["permissions"]
+			}
+		]
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/scan/result", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handleScanResult(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Result().StatusCode, http.StatusOK)
+	}
+
+	results, err := store.ListScanResults(10)
+	if err != nil {
+		t.Fatalf("ListScanResults: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("scan results len = %d, want 1", len(results))
+	}
+	if results[0].Scanner != "plugin-scanner" {
+		t.Errorf("scanner = %q, want plugin-scanner", results[0].Scanner)
+	}
+	if results[0].MaxSeverity != "HIGH" {
+		t.Errorf("max severity = %q, want HIGH", results[0].MaxSeverity)
+	}
+}
+
+func TestAPIEnforceBlockListAndUnblock(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), store: store, logger: logger}
+
+	blockBody := []byte(`{"target_type":"skill","target_name":"bad-skill","reason":"malware"}`)
+	blockReq := httptest.NewRequest(http.MethodPost, "/enforce/block", bytes.NewReader(blockBody))
+	blockW := httptest.NewRecorder()
+	api.handleEnforceBlock(blockW, blockReq)
+	if blockW.Result().StatusCode != http.StatusOK {
+		t.Fatalf("block status = %d, want %d", blockW.Result().StatusCode, http.StatusOK)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/enforce/blocked", nil)
+	listW := httptest.NewRecorder()
+	api.handleEnforceBlocked(listW, listReq)
+	if listW.Result().StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, want %d", listW.Result().StatusCode, http.StatusOK)
+	}
+
+	var blocked []enforcementEntry
+	if err := json.NewDecoder(listW.Result().Body).Decode(&blocked); err != nil {
+		t.Fatalf("decode blocked: %v", err)
+	}
+	if len(blocked) != 1 {
+		t.Fatalf("blocked len = %d, want 1", len(blocked))
+	}
+	if blocked[0].TargetName != "bad-skill" {
+		t.Errorf("target_name = %q, want bad-skill", blocked[0].TargetName)
+	}
+
+	unblockReq := httptest.NewRequest(http.MethodDelete, "/enforce/block", bytes.NewReader([]byte(`{"target_type":"skill","target_name":"bad-skill"}`)))
+	unblockW := httptest.NewRecorder()
+	api.handleEnforceBlock(unblockW, unblockReq)
+	if unblockW.Result().StatusCode != http.StatusOK {
+		t.Fatalf("unblock status = %d, want %d", unblockW.Result().StatusCode, http.StatusOK)
+	}
+
+	listW = httptest.NewRecorder()
+	api.handleEnforceBlocked(listW, listReq)
+	if err := json.NewDecoder(listW.Result().Body).Decode(&blocked); err != nil {
+		t.Fatalf("decode blocked after unblock: %v", err)
+	}
+	if len(blocked) != 0 {
+		t.Fatalf("blocked len after unblock = %d, want 0", len(blocked))
+	}
+}
+
+func TestAPIEnforceAllowList(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), store: store, logger: logger}
+
+	body := []byte(`{"target_type":"mcp","target_name":"trusted-mcp","reason":"reviewed"}`)
+	req := httptest.NewRequest(http.MethodPost, "/enforce/allow", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handleEnforceAllow(w, req)
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Result().StatusCode, http.StatusOK)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/enforce/allowed", nil)
+	listW := httptest.NewRecorder()
+	api.handleEnforceAllowed(listW, listReq)
+
+	var allowed []enforcementEntry
+	if err := json.NewDecoder(listW.Result().Body).Decode(&allowed); err != nil {
+		t.Fatalf("decode allowed: %v", err)
+	}
+	if len(allowed) != 1 {
+		t.Fatalf("allowed len = %d, want 1", len(allowed))
+	}
+	if allowed[0].TargetType != "mcp" {
+		t.Errorf("target_type = %q, want mcp", allowed[0].TargetType)
+	}
+}
+
+func TestAPIAlertsAndAuditEventHandlers(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), store: store, logger: logger}
+
+	body := []byte(`{
+		"action":"admission",
+		"target":"/tmp/bad-plugin",
+		"actor":"plugin-test",
+		"details":"blocked",
+		"severity":"HIGH"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/audit/event", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handleAuditEvent(w, req)
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("audit status = %d, want %d", w.Result().StatusCode, http.StatusOK)
+	}
+
+	alertsReq := httptest.NewRequest(http.MethodGet, "/alerts?limit=1", nil)
+	alertsW := httptest.NewRecorder()
+	api.handleAlerts(alertsW, alertsReq)
+	if alertsW.Result().StatusCode != http.StatusOK {
+		t.Fatalf("alerts status = %d, want %d", alertsW.Result().StatusCode, http.StatusOK)
+	}
+
+	var alerts []audit.Event
+	if err := json.NewDecoder(alertsW.Result().Body).Decode(&alerts); err != nil {
+		t.Fatalf("decode alerts: %v", err)
+	}
+	if len(alerts) != 1 {
+		t.Fatalf("alerts len = %d, want 1", len(alerts))
+	}
+	if alerts[0].Action != "admission" {
+		t.Errorf("action = %q, want admission", alerts[0].Action)
+	}
+}
+
+func TestAPIPolicyEvaluateFallback(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), store: store, logger: logger}
+
+	blockReq := httptest.NewRequest(http.MethodPost, "/enforce/block", bytes.NewReader([]byte(`{"target_type":"plugin","target_name":"evil-plugin","reason":"malicious"}`)))
+	blockW := httptest.NewRecorder()
+	api.handleEnforceBlock(blockW, blockReq)
+	if blockW.Result().StatusCode != http.StatusOK {
+		t.Fatalf("block status = %d, want %d", blockW.Result().StatusCode, http.StatusOK)
+	}
+
+	body := []byte(`{
+		"domain":"admission",
+		"input":{
+			"target_type":"plugin",
+			"target_name":"evil-plugin",
+			"path":"/tmp/evil-plugin"
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/policy/evaluate", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handlePolicyEvaluate(w, req)
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Result().StatusCode, http.StatusOK)
+	}
+
+	var resp struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Verdict string `json:"verdict"`
+			Reason  string `json:"reason"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Result().Body).Decode(&resp); err != nil {
+		t.Fatalf("decode policy response: %v", err)
+	}
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+	if resp.Data.Verdict != "blocked" {
+		t.Errorf("verdict = %q, want blocked", resp.Data.Verdict)
+	}
+
+	body = []byte(`{
+		"domain":"admission",
+		"input":{
+			"target_type":"plugin",
+			"target_name":"new-plugin",
+			"path":"/tmp/new-plugin",
+			"scan_result":{"max_severity":"HIGH","total_findings":2}
+		}
+	}`)
+	req = httptest.NewRequest(http.MethodPost, "/policy/evaluate", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	api.handlePolicyEvaluate(w, req)
+	if err := json.NewDecoder(w.Result().Body).Decode(&resp); err != nil {
+		t.Fatalf("decode high-severity response: %v", err)
+	}
+	if resp.Data.Verdict != "rejected" {
+		t.Errorf("high-severity verdict = %q, want rejected", resp.Data.Verdict)
+	}
+}
+
 func TestAPIServerRun(t *testing.T) {
 	health := NewSidecarHealth()
 	api := NewAPIServer("127.0.0.1:0", health, nil, nil, nil)
@@ -1622,6 +1842,9 @@ func TestAPIServerRun(t *testing.T) {
 
 	select {
 	case err := <-errCh:
+		if err != nil && strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("loopback listeners are unavailable in this environment: %v", err)
+		}
 		if err != nil && err != http.ErrServerClosed {
 			t.Errorf("Run returned error: %v", err)
 		}

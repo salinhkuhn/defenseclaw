@@ -59,16 +59,63 @@ func TestPIDFileIsJSON(t *testing.T) {
 	}
 }
 
-func TestReadPIDInfoRejectsLegacyPlainText(t *testing.T) {
+func TestReadPIDInfoParsesLegacyPlainText(t *testing.T) {
 	dir := t.TempDir()
 	d := New(dir)
 
-	// Write a plain-text PID (legacy format)
 	os.WriteFile(d.pidFile, []byte("12345\n"), 0644)
+
+	info, err := d.readPIDInfo()
+	if err != nil {
+		t.Fatalf("readPIDInfo should parse legacy plain-text PID: %v", err)
+	}
+	if info.PID != 12345 {
+		t.Errorf("PID = %d, want 12345", info.PID)
+	}
+	if info.Executable != "" {
+		t.Errorf("Executable should be empty for legacy format, got %q", info.Executable)
+	}
+	if info.StartTime != 0 {
+		t.Errorf("StartTime should be 0 for legacy format, got %d", info.StartTime)
+	}
+}
+
+func TestReadPIDInfoRejectsGarbage(t *testing.T) {
+	dir := t.TempDir()
+	d := New(dir)
+
+	os.WriteFile(d.pidFile, []byte("not-a-pid-or-json\n"), 0644)
 
 	_, err := d.readPIDInfo()
 	if err == nil {
-		t.Fatal("readPIDInfo should reject plain-text PID files")
+		t.Fatal("readPIDInfo should reject files that are neither JSON nor a valid PID")
+	}
+}
+
+func TestReadPIDInfoRejectsNegativePID(t *testing.T) {
+	dir := t.TempDir()
+	d := New(dir)
+
+	os.WriteFile(d.pidFile, []byte("-1\n"), 0644)
+
+	_, err := d.readPIDInfo()
+	if err == nil {
+		t.Fatal("readPIDInfo should reject negative PIDs")
+	}
+}
+
+func TestReadPIDInfoParsesLegacyNoNewline(t *testing.T) {
+	dir := t.TempDir()
+	d := New(dir)
+
+	os.WriteFile(d.pidFile, []byte("54321"), 0644)
+
+	info, err := d.readPIDInfo()
+	if err != nil {
+		t.Fatalf("readPIDInfo should parse plain PID without trailing newline: %v", err)
+	}
+	if info.PID != 54321 {
+		t.Errorf("PID = %d, want 54321", info.PID)
 	}
 }
 
@@ -154,6 +201,11 @@ func TestVerifyProcessWrongExecutable(t *testing.T) {
 
 	switch runtime.GOOS {
 	case "linux", "darwin":
+		if runtime.GOOS == "darwin" {
+			if _, err := processExecutableDarwin(os.Getpid()); err != nil {
+				t.Skipf("darwin process inspection unavailable in this environment: %v", err)
+			}
+		}
 		if d.verifyProcess(info) {
 			t.Error("verifyProcess should return false for wrong executable")
 		}
@@ -169,6 +221,9 @@ func TestVerifyProcessDarwinUsesPS(t *testing.T) {
 
 	d := New(t.TempDir())
 	exe, _ := os.Executable()
+	if _, err := processExecutableDarwin(os.Getpid()); err != nil {
+		t.Skipf("darwin process inspection unavailable in this environment: %v", err)
+	}
 
 	info := pidInfo{
 		PID:        os.Getpid(),

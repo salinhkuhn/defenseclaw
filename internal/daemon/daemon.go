@@ -88,13 +88,11 @@ func (d *Daemon) verifyProcessLinux(info pidInfo) bool {
 }
 
 func (d *Daemon) verifyProcessDarwin(info pidInfo) bool {
-	out, err := exec.Command("ps", "-p", strconv.Itoa(info.PID), "-o", "comm=").Output()
+	comm, err := processExecutableDarwin(info.PID)
 	if err != nil {
-		return false
-	}
-	comm := strings.TrimSpace(string(out))
-	if comm == "" {
-		return false
+		// Match the Linux behavior: if process metadata is unavailable in the
+		// current environment, fall back to the liveness check done by IsRunning.
+		return processExists(info.PID)
 	}
 	if info.Executable != "" {
 		exeBase := filepath.Base(info.Executable)
@@ -103,6 +101,18 @@ func (d *Daemon) verifyProcessDarwin(info pidInfo) bool {
 		}
 	}
 	return true
+}
+
+func processExecutableDarwin(pid int) (string, error) {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil {
+		return "", err
+	}
+	comm := strings.TrimSpace(string(out))
+	if comm == "" {
+		return "", fmt.Errorf("daemon: ps returned empty command for pid %d", pid)
+	}
+	return comm, nil
 }
 
 func (d *Daemon) Start(args []string) (int, error) {
@@ -235,8 +245,11 @@ func (d *Daemon) readPIDInfo() (pidInfo, error) {
 
 	var info pidInfo
 	if err := json.Unmarshal(data, &info); err != nil {
-		// Fall back: legacy plain-text PID files written by older versions
-		return pidInfo{}, err
+		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+		if parseErr != nil || pid <= 0 {
+			return pidInfo{}, fmt.Errorf("daemon: pid file is neither JSON nor a valid PID number: %w", err)
+		}
+		return pidInfo{PID: pid}, nil
 	}
 	return info, nil
 }
