@@ -222,7 +222,7 @@ func (a *APIServer) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = a.logger.LogAction("api-config-patch", req.Path, fmt.Sprintf("patched via REST API value=%v", req.Value))
+	_ = a.logger.LogAction("api-config-patch", req.Path, fmt.Sprintf("patched via REST API value_type=%T", req.Value))
 	a.writeJSON(w, http.StatusOK, map[string]string{"status": "patched", "path": req.Path})
 }
 
@@ -327,6 +327,7 @@ func (a *APIServer) handleSkillScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = a.logger.LogAction("api-skill-scan", req.Target, fmt.Sprintf("findings=%d max=%s", len(result.Findings), result.MaxSeverity()))
+	_ = a.logger.LogScanWithVerdict(result, "")
 
 	a.writeJSON(w, http.StatusOK, result)
 }

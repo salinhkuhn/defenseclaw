@@ -523,7 +523,7 @@ func TestRouteApprovalDangerousCommand(t *testing.T) {
 	client := connectToMockGW(t, srv)
 	store, logger := testStoreAndLogger(t)
 
-	r := NewEventRouter(client, store, logger, false)
+	r := NewEventRouter(client, store, logger, false, nil)
 
 	payload, _ := json.Marshal(ApprovalRequestPayload{
 		ID: "approval-1",
@@ -560,7 +560,7 @@ func TestRouteApprovalAutoApprove(t *testing.T) {
 	client := connectToMockGW(t, srv)
 	store, logger := testStoreAndLogger(t)
 
-	r := NewEventRouter(client, store, logger, true)
+	r := NewEventRouter(client, store, logger, true, nil)
 
 	payload, _ := json.Marshal(ApprovalRequestPayload{
 		ID: "approval-2",
@@ -594,7 +594,7 @@ func TestRouteApprovalNoAutoApprove(t *testing.T) {
 	client := connectToMockGW(t, srv)
 	store, logger := testStoreAndLogger(t)
 
-	r := NewEventRouter(client, store, logger, false)
+	r := NewEventRouter(client, store, logger, false, nil)
 
 	payload, _ := json.Marshal(ApprovalRequestPayload{
 		ID: "approval-3",
@@ -622,7 +622,7 @@ func TestRouteApprovalNoPlan(t *testing.T) {
 	client := connectToMockGW(t, srv)
 	store, logger := testStoreAndLogger(t)
 
-	r := NewEventRouter(client, store, logger, true)
+	r := NewEventRouter(client, store, logger, true, nil)
 
 	payload, _ := json.Marshal(ApprovalRequestPayload{ID: "approval-4"})
 
