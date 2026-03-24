@@ -33,6 +33,15 @@ import {
 } from "./helpers.js";
 import { hasInstallScripts } from "./analyzers.js";
 import { buildAnalyzers } from "./analyzer_factory.js";
+import {
+  defaultPolicy,
+  fromPreset,
+  fromYaml,
+  disabledAnalyzerNames,
+  applySeverityOverride,
+  isSuppressed,
+  type PluginScanPolicy,
+} from "./policy.js";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -44,7 +53,21 @@ export async function scanPlugin(
 ): Promise<ScanResult> {
   const start = Date.now();
   const target = resolve(pluginDir);
-  const profile: ScanProfile = options?.profile ?? "default";
+
+  // --- Load policy ---
+  let policy: PluginScanPolicy;
+  if (options?.policy) {
+    if (["default", "strict", "permissive"].includes(options.policy)) {
+      policy = fromPreset(options.policy);
+    } else {
+      policy = await fromYaml(options.policy);
+    }
+  } else {
+    policy = defaultPolicy();
+  }
+
+  // Profile from options overrides policy profile
+  const profile: ScanProfile = options?.profile ?? policy.profile;
 
   // --- Load manifest ---
   const manifest = await loadManifest(target);
@@ -64,8 +87,11 @@ export async function scanPlugin(
     return buildResult(target, findings, start);
   }
 
-  // --- Build analyzer pipeline ---
-  const analyzers = buildAnalyzers({ profile });
+  // --- Build analyzer pipeline (respecting policy toggles) ---
+  const analyzers = buildAnalyzers({
+    profile,
+    disabledAnalyzers: disabledAnalyzerNames(policy),
+  });
 
   // --- Build scan context ---
   const ctx: ScanContext = {
@@ -102,6 +128,12 @@ export async function scanPlugin(
     allFindings.push(...findings);
   }
 
+  // --- Apply policy: severity overrides + suppression ---
+  for (const f of allFindings) {
+    applySeverityOverride(f, policy.severity_overrides);
+  }
+  const policyFiltered = allFindings.filter((f) => !isSuppressed(f, policy));
+
   // --- Build metadata ---
   const metadata: ScanMetadata = {
     manifest_name: manifest.name,
@@ -113,7 +145,7 @@ export async function scanPlugin(
     detected_capabilities: [...ctx.capabilities].sort(),
   };
 
-  return buildResult(target, deduplicateFindings(allFindings), start, metadata);
+  return buildResult(target, deduplicateFindings(policyFiltered), start, metadata);
 }
 
 // ---------------------------------------------------------------------------

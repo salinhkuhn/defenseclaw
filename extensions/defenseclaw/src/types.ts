@@ -177,4 +177,6 @@ export type ScanProfile = "default" | "strict";
 
 export interface PluginScanOptions {
   profile?: ScanProfile;
+  /** Policy preset name ("default", "strict", "permissive") or path to YAML policy file. */
+  policy?: string;
 }
