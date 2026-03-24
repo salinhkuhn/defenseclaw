@@ -1,12 +1,19 @@
 /**
  * DefenseClaw Plugin Scanner — orchestrator.
  *
- * This is the public entry point. It loads the manifest, runs each analysis
- * phase, deduplicates findings, and computes the assessment.
+ * This is the public entry point. It loads the manifest, builds the analyzer
+ * pipeline via the factory, runs each analyzer, deduplicates findings, and
+ * computes the assessment.
  *
- * Rule definitions:    ./plugin-rules.ts
- * Analysis phases:     ./plugin-analyzers.ts
- * Helpers & utilities: ./plugin-helpers.ts
+ * Architecture modeled after the cisco-ai-skill-scanner:
+ * - Analyzer interface (analyzer.ts)
+ * - Analyzer classes (analyzer_classes.ts)
+ * - Factory function (analyzer_factory.ts)
+ * - Orchestrator (this file)
+ *
+ * Rule definitions:    ./rules.ts
+ * Analysis phases:     ./analyzers.ts (legacy functions, wrapped by classes)
+ * Helpers & utilities: ./helpers.ts
  */
 import { readFile } from "node:fs/promises";
 import { join, basename, resolve } from "node:path";
@@ -18,25 +25,14 @@ import type {
   ScanProfile,
   PluginScanOptions,
 } from "../../types.js";
+import type { ScanContext } from "./analyzer.js";
 import {
   makeFinding,
   deduplicateFindings,
   buildResult,
-  checkLockfilePresence,
-  dirExists,
 } from "./helpers.js";
-import {
-  checkPermissions,
-  checkDependencies,
-  checkInstallScripts,
-  hasInstallScripts,
-  checkTool,
-  scanSourceFiles,
-  scanDirectoryStructure,
-  scanClawManifest,
-  scanBundleSize,
-  scanJsonConfigs,
-} from "./analyzers.js";
+import { hasInstallScripts } from "./analyzers.js";
+import { buildAnalyzers } from "./analyzer_factory.js";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -47,15 +43,13 @@ export async function scanPlugin(
   options?: PluginScanOptions,
 ): Promise<ScanResult> {
   const start = Date.now();
-  const findings: Finding[] = [];
   const target = resolve(pluginDir);
-  const capabilities = new Set<string>();
   const profile: ScanProfile = options?.profile ?? "default";
 
   // --- Load manifest ---
   const manifest = await loadManifest(target);
   if (!manifest) {
-    findings.push(makeFinding(findings.length + 1, {
+    const findings = [makeFinding(1, {
       rule_id: "MANIFEST-MISSING",
       severity: "MEDIUM",
       confidence: 1.0,
@@ -66,72 +60,60 @@ export async function scanPlugin(
       location: target,
       remediation: "Add a package.json with name, version, and permissions fields.",
       tags: ["supply-chain"],
-    }));
+    })];
     return buildResult(target, findings, start);
   }
 
-  // --- Manifest checks ---
-  checkPermissions(manifest, findings, target);
-  checkDependencies(manifest, findings, target);
-  checkInstallScripts(manifest, findings, target);
+  // --- Build analyzer pipeline ---
+  const analyzers = buildAnalyzers({ profile });
 
-  if (manifest.tools) {
-    for (const tool of manifest.tools) {
-      checkTool(tool, findings, target);
+  // --- Build scan context ---
+  const ctx: ScanContext = {
+    pluginDir: target,
+    manifest,
+    sourceFiles: [], // populated by SourceAnalyzer
+    profile,
+    capabilities: new Set<string>(),
+    findingCounter: { value: 1 },
+    previousFindings: [],
+    metadata: {},
+  };
+
+  // --- Run analyzers sequentially ---
+  // Each analyzer may depend on ctx state set by previous analyzers.
+  // MetaAnalyzer (last) reads ctx.previousFindings for cross-referencing.
+  const allFindings: Finding[] = [];
+
+  for (const analyzer of analyzers) {
+    // Feed accumulated findings to meta analyzer
+    if (analyzer.name === "meta") {
+      ctx.previousFindings = [...allFindings];
     }
+
+    const findings = await analyzer.analyze(ctx);
+
+    // Assign stable IDs
+    for (const f of findings) {
+      if (f.id.startsWith("plugin-0") || !f.id.startsWith("plugin-")) {
+        f.id = `plugin-${ctx.findingCounter.value++}`;
+      }
+    }
+
+    allFindings.push(...findings);
   }
 
-  // --- Source analysis ---
-  const { fileCount, totalBytes } = await scanSourceFiles(
-    target, findings, capabilities, profile,
-  );
-
-  // --- Directory structure ---
-  await scanDirectoryStructure(target, findings);
-
-  // --- OpenClaw native manifest ---
-  await scanClawManifest(target, findings);
-
-  // --- Bundle size ---
-  await scanBundleSize(target, findings);
-
-  // --- JSON config artifacts ---
-  await scanJsonConfigs(target, findings);
-
-  // --- Lockfile check ---
-  const hasLockfile = await checkLockfilePresence(target);
-  if (!hasLockfile && manifest.dependencies && Object.keys(manifest.dependencies).length > 0) {
-    // Published packages don't ship lockfiles (npm strips them during pack).
-    // Only flag this for dev workspaces that have node_modules/.
-    const isDistributed = !(await dirExists(join(target, "node_modules")));
-    if (!isDistributed) {
-      findings.push(makeFinding(findings.length + 1, {
-        rule_id: "STRUCT-NO-LOCKFILE",
-        severity: "MEDIUM",
-        confidence: 1.0,
-        title: "No lockfile found",
-        description:
-          "Plugin has dependencies but no package-lock.json, yarn.lock, or pnpm-lock.yaml. " +
-          "Without a lockfile, builds are non-deterministic and vulnerable to dependency confusion.",
-        location: target,
-        remediation: "Run npm install to generate a package-lock.json and commit it.",
-        tags: ["supply-chain"],
-      }));
-    }
-  }
-
-  // --- Build result ---
+  // --- Build metadata ---
   const metadata: ScanMetadata = {
     manifest_name: manifest.name,
     manifest_version: manifest.version,
-    file_count: fileCount,
-    total_size_bytes: totalBytes,
-    has_lockfile: hasLockfile,
+    file_count: ctx.metadata.file_count ?? 0,
+    total_size_bytes: ctx.metadata.total_size_bytes ?? 0,
+    has_lockfile: ctx.metadata.has_lockfile ?? false,
     has_install_scripts: hasInstallScripts(manifest),
-    detected_capabilities: [...capabilities].sort(),
+    detected_capabilities: [...ctx.capabilities].sort(),
   };
 
-  return buildResult(target, deduplicateFindings(findings), start, metadata);
+  return buildResult(target, deduplicateFindings(allFindings), start, metadata);
 }
 
 // ---------------------------------------------------------------------------

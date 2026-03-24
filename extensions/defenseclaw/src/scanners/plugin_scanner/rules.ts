@@ -362,4 +362,11 @@ export const TAXONOMY_MAP: Record<string, TaxonomyRef> = {
   "JSON-SEC-GENERIC":     { objective: "OB-008", technique: "AITech-8.2", sub_technique: "AISubtech-8.2.3" },
   "JSON-URL-HTTP":        { objective: "OB-009", technique: "AITech-9.1", sub_technique: "AISubtech-9.1.3" },
   "JSON-URL-C2":          { objective: "OB-008", technique: "AITech-8.2", sub_technique: "AISubtech-8.2.3" },
+
+  // Meta-analyzer cross-reference rules
+  "META-EXFIL-CHAIN":        { objective: "OB-008", technique: "AITech-8.2", sub_technique: "AISubtech-8.2.3" },
+  "META-EVASIVE-ATTACK":     { objective: "OB-009", technique: "AITech-9.2", sub_technique: "AISubtech-9.2.1" },
+  "META-SUPPLY-CHAIN":       { objective: "OB-009", technique: "AITech-9.3", sub_technique: "AISubtech-9.3.1" },
+  "META-PERSISTENT-COMPROMISE": { objective: "OB-005", technique: "AITech-5.2", sub_technique: "AISubtech-5.2.1" },
+  "META-CLOUD-CRED-THEFT":   { objective: "OB-008", technique: "AITech-8.2", sub_technique: "AISubtech-8.2.3" },
 };
