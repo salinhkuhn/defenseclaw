@@ -14,8 +14,11 @@ dependencies = [
 
 [project.optional-dependencies]
 tui = ["textual>=0.50"]
-# NOTE: cisco-ai-skill-scanner removed due to litellm PyPI security incident (March 2026)
-# Once litellm is restored, manually install with: pip install cisco-ai-skill-scanner>=2.0
+# Pin litellm via direct wheel: PyPI simple index lists litellm as quarantined (no file links).
+skill-scan = [
+    "cisco-ai-skill-scanner>=2.0",
+    "litellm==1.80.16",
+]
 
 [dependency-groups]
 dev = [
