@@ -31,7 +31,7 @@
     }
   },
   "bin": {
-    "defenseclaw-plugin-scanner": "./bin/plugin-scanner.mjs"
+    "defenseclaw-plugin-scanner": "./scripts/plugin-scanner.mjs"
   },
   "license": "Apache-2.0"
 }
