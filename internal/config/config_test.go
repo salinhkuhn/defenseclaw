@@ -243,28 +243,116 @@ func TestDedup(t *testing.T) {
 	}
 }
 
-func TestMCPDirsForMode(t *testing.T) {
-	dirs := MCPDirsForMode(ClawOpenClaw, "/tmp/test-oc")
-	if len(dirs) != 2 {
-		t.Fatalf("expected 2 MCP dirs, got %d", len(dirs))
+func TestReadMCPServersFromFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	ocJSON := `{
+		"mcp": {
+			"servers": {
+				"test-server": {
+					"command": "npx",
+					"args": ["-y", "test-server"],
+					"url": "http://localhost:3000"
+				},
+				"another": {
+					"url": "https://example.com/mcp"
+				}
+			}
+		}
+	}`
+	ocPath := filepath.Join(tmpDir, "openclaw.json")
+	if err := os.WriteFile(ocPath, []byte(ocJSON), 0o644); err != nil {
+		t.Fatalf("write openclaw.json: %v", err)
 	}
-	if dirs[0] != "/tmp/test-oc/mcp-servers" {
-		t.Errorf("dirs[0] = %q, want /tmp/test-oc/mcp-servers", dirs[0])
+
+	servers, err := readMCPServersFromFile(ocPath)
+	if err != nil {
+		t.Fatalf("readMCPServersFromFile: %v", err)
 	}
-	if dirs[1] != "/tmp/test-oc/mcps" {
-		t.Errorf("dirs[1] = %q, want /tmp/test-oc/mcps", dirs[1])
+	if len(servers) != 2 {
+		t.Fatalf("expected 2 servers, got %d", len(servers))
+	}
+
+	byName := map[string]MCPServerEntry{}
+	for _, s := range servers {
+		byName[s.Name] = s
+	}
+
+	ts, ok := byName["test-server"]
+	if !ok {
+		t.Fatal("expected test-server entry")
+	}
+	if ts.Command != "npx" {
+		t.Errorf("command = %q, want npx", ts.Command)
+	}
+	if ts.URL != "http://localhost:3000" {
+		t.Errorf("url = %q, want http://localhost:3000", ts.URL)
+	}
+
+	another, ok := byName["another"]
+	if !ok {
+		t.Fatal("expected another entry")
+	}
+	if another.URL != "https://example.com/mcp" {
+		t.Errorf("url = %q, want https://example.com/mcp", another.URL)
 	}
 }
 
-func TestMCPDirsForMode_DefaultHome(t *testing.T) {
-	dirs := MCPDirsForMode(ClawOpenClaw, "")
-	if len(dirs) != 2 {
-		t.Fatalf("expected 2 MCP dirs, got %d", len(dirs))
+func TestReadMCPServersFromFile_NoMCPBlock(t *testing.T) {
+	tmpDir := t.TempDir()
+	ocJSON := `{"agents": {"defaults": {"workspace": "/tmp"}}}`
+	ocPath := filepath.Join(tmpDir, "openclaw.json")
+	if err := os.WriteFile(ocPath, []byte(ocJSON), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
 	}
-	for _, d := range dirs {
-		if !filepath.IsAbs(d) {
-			t.Errorf("expected absolute path, got %q", d)
-		}
+
+	servers, err := readMCPServersFromFile(ocPath)
+	if err != nil {
+		t.Fatalf("readMCPServersFromFile: %v", err)
+	}
+	if len(servers) != 0 {
+		t.Fatalf("expected 0 servers, got %d", len(servers))
+	}
+}
+
+func TestReadMCPServersFromFile_MissingFile(t *testing.T) {
+	servers, err := readMCPServersFromFile("/tmp/nonexistent/openclaw.json")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if len(servers) != 0 {
+		t.Fatalf("expected 0 servers, got %d", len(servers))
+	}
+}
+
+func TestParseMCPServersJSON(t *testing.T) {
+	data := []byte(`{
+		"server-a": {"command": "npx", "args": ["-y", "srv"]},
+		"server-b": {"url": "https://example.com/mcp", "transport": "sse"}
+	}`)
+	entries, err := parseMCPServersJSON(data)
+	if err != nil {
+		t.Fatalf("parseMCPServersJSON: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2, got %d", len(entries))
+	}
+
+	byName := map[string]MCPServerEntry{}
+	for _, e := range entries {
+		byName[e.Name] = e
+	}
+	if byName["server-b"].Transport != "sse" {
+		t.Errorf("transport = %q, want sse", byName["server-b"].Transport)
+	}
+}
+
+func TestParseMCPServersJSON_Empty(t *testing.T) {
+	entries, err := parseMCPServersJSON([]byte(""))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0, got %d", len(entries))
 	}
 }
 
@@ -323,18 +411,6 @@ func TestSkillDirsForMode_WithOpenclawJSON(t *testing.T) {
 	}
 	if !foundWs {
 		t.Errorf("expected workspace/skills %q in dirs: %v", wsSkills, dirs)
-	}
-}
-
-func TestConfig_MCPDirs(t *testing.T) {
-	cfg := &Config{
-		Claw: ClawConfig{
-			HomeDir: "/tmp/test-home",
-		},
-	}
-	dirs := cfg.MCPDirs()
-	if len(dirs) != 2 {
-		t.Fatalf("expected 2 dirs, got %d", len(dirs))
 	}
 }
 

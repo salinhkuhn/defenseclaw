@@ -57,12 +57,6 @@ func DefaultSkillWatchPaths() []string {
 	return SkillDirsForMode(ClawOpenClaw, "")
 }
 
-// DefaultMCPWatchPaths returns MCP directories for the default claw mode.
-// Prefer MCPDirsForMode when a config is available.
-func DefaultMCPWatchPaths() []string {
-	return MCPDirsForMode(ClawOpenClaw, "")
-}
-
 func DefaultConfig() *Config {
 	dataDir := DefaultDataPath()
 	clawMode := ClawOpenClaw
@@ -82,9 +76,13 @@ func DefaultConfig() *Config {
 			SkillScanner: SkillScannerConfig{
 				Binary: "skill-scanner",
 			},
-			MCPScanner: "mcp-scanner",
-			AIBOM:      "cisco-aibom",
-			CodeGuard:  filepath.Join(dataDir, "codeguard-rules"),
+			MCPScanner: MCPScannerConfig{
+				Binary:     "mcp-scanner",
+				LLMTimeout: 30,
+				LLMMaxRetries: 3,
+			},
+			AIBOM:     "cisco-aibom",
+			CodeGuard: filepath.Join(dataDir, "codeguard-rules"),
 		},
 		OpenShell: OpenShellConfig{
 			Binary:    "openshell",
@@ -124,15 +122,16 @@ func DefaultConfig() *Config {
 			MaxReconnectMs:  15000,
 			ApprovalTimeout: 30,
 			APIPort:         18790,
-			Watcher: GatewayWatcherConfig{
-				Enabled: false,
-				Skill: GatewayWatcherSkillConfig{
-					Enabled:    true,
-					TakeAction: true,
-					Dirs:       []string{},
-				},
+		Watcher: GatewayWatcherConfig{
+			Enabled: false,
+			Skill: GatewayWatcherSkillConfig{
+				Enabled:    true,
+				TakeAction: true,
+				Dirs:       []string{},
 			},
 		},
+		},
 		SkillActions:  DefaultSkillActions(),
+		MCPActions:    DefaultMCPActions(),
 	}
 }

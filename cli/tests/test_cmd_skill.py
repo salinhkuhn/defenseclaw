@@ -1,4 +1,4 @@
-"""Tests for 'defenseclaw skill' command group — block, allow, scan, quarantine, restore, list, info."""
+"""Tests for 'defenseclaw skill' command group — block, allow, scan, quarantine, restore, list, info, search."""
 
 import json
 import os
@@ -7,15 +7,16 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
+import uuid
 
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from click.testing import CliRunner
 
-from defenseclaw.commands.cmd_skill import skill
+from defenseclaw.commands.cmd_skill import skill, _skill_status_display, _build_scan_map
 from defenseclaw.enforce.policy import PolicyEngine
-from defenseclaw.models import Finding, ScanResult
+from defenseclaw.models import ActionEntry, ActionState, Finding, ScanResult
 from tests.helpers import make_app_context, cleanup_app
 
 
@@ -251,6 +252,68 @@ class TestSkillList(SkillCommandTestBase):
         self.assertEqual(data[0]["name"], "test-skill")
         self.assertEqual(data[0]["status"], "active")
 
+    @patch("defenseclaw.commands.cmd_skill._list_openclaw_skills_full")
+    def test_list_merges_enforcement_only_entries(self, mock_list):
+        """Skills only in the actions DB (quarantined/blocked) should appear in list."""
+        mock_list.return_value = {
+            "skills": [
+                {"name": "visible-skill", "description": "Still here", "emoji": "",
+                 "eligible": True, "disabled": False, "blockedByAllowlist": False,
+                 "source": "user", "bundled": False, "homepage": ""},
+            ]
+        }
+        pe = PolicyEngine(self.app.store)
+        pe.block("skill", "removed-skill", "quarantined after scan")
+
+        result = self.invoke(["list"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("visible-skill", result.output)
+        self.assertIn("removed-skill", result.output)
+
+    @patch("defenseclaw.commands.cmd_skill._list_openclaw_skills_full")
+    def test_list_merges_scan_only_entries(self, mock_list):
+        """Skills with scan history but no longer in OpenClaw should appear."""
+        mock_list.return_value = {"skills": []}
+
+        self.app.store.insert_scan_result(
+            str(uuid.uuid4()), "skill-scanner", "/old/path/ghost-skill",
+            datetime.now(timezone.utc), 500, 1, "MEDIUM", "{}",
+        )
+
+        result = self.invoke(["list"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("ghost-skill", result.output)
+
+    @patch("defenseclaw.commands.cmd_skill._list_openclaw_skills_full")
+    def test_list_no_duplicate_entries(self, mock_list):
+        """If a skill is in both OpenClaw list and actions DB, it shouldn't appear twice."""
+        mock_list.return_value = {
+            "skills": [
+                {"name": "my-skill", "description": "Active", "emoji": "",
+                 "eligible": True, "disabled": False, "blockedByAllowlist": False,
+                 "source": "user", "bundled": False, "homepage": ""},
+            ]
+        }
+        pe = PolicyEngine(self.app.store)
+        pe.allow("skill", "my-skill", "trusted")
+
+        result = self.invoke(["list", "--json"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        data = json.loads(result.output)
+        names = [d["name"] for d in data]
+        self.assertEqual(names.count("my-skill"), 1)
+
+    @patch("defenseclaw.commands.cmd_skill._list_openclaw_skills_full", return_value=None)
+    def test_list_enforcement_only_shows_blocked_status(self, _mock):
+        """Blocked-only entries (no OpenClaw data) should show blocked status."""
+        pe = PolicyEngine(self.app.store)
+        pe.block("skill", "banned-skill", "dangerous")
+
+        result = self.invoke(["list"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("banned-skill", result.output)
+        self.assertIn("blocked", result.output)
+
 
 class TestSkillInfo(SkillCommandTestBase):
     @patch("defenseclaw.commands.cmd_skill._get_openclaw_skill_info", return_value=None)
@@ -288,42 +351,68 @@ class TestSkillInfo(SkillCommandTestBase):
         self.assertEqual(data["name"], "my-skill")
 
 
-class TestSkillStatusHelpers(unittest.TestCase):
-    def test_skill_status_disabled(self):
-        from defenseclaw.commands.cmd_skill import _skill_status
-        self.assertEqual(_skill_status({"disabled": True}), "disabled")
+# ---------------------------------------------------------------------------
+# _skill_status_display with action entries
+# ---------------------------------------------------------------------------
 
-    def test_skill_status_blocked(self):
-        from defenseclaw.commands.cmd_skill import _skill_status
-        self.assertEqual(_skill_status({"blockedByAllowlist": True}), "blocked")
-
-    def test_skill_status_active(self):
-        from defenseclaw.commands.cmd_skill import _skill_status
-        self.assertEqual(_skill_status({"eligible": True}), "active")
-
-    def test_skill_status_inactive(self):
-        from defenseclaw.commands.cmd_skill import _skill_status
-        self.assertEqual(_skill_status({}), "inactive")
-
-    def test_skill_status_display_ready(self):
-        from defenseclaw.commands.cmd_skill import _skill_status_display
+class TestSkillStatusDisplay(unittest.TestCase):
+    def test_ready(self):
         self.assertIn("ready", _skill_status_display({"eligible": True}))
 
-    def test_skill_status_display_disabled(self):
-        from defenseclaw.commands.cmd_skill import _skill_status_display
+    def test_disabled_from_openclaw(self):
         self.assertIn("disabled", _skill_status_display({"disabled": True}))
 
+    def test_blocked_from_openclaw(self):
+        self.assertIn("blocked", _skill_status_display({"blockedByAllowlist": True}))
+
+    def test_quarantined_from_actions(self):
+        ae = MagicMock()
+        ae.actions = ActionState(file="quarantine", runtime="", install="")
+        result = _skill_status_display({}, ae)
+        self.assertIn("quarantined", result)
+
+    def test_blocked_from_actions(self):
+        ae = MagicMock()
+        ae.actions = ActionState(file="", runtime="", install="block")
+        result = _skill_status_display({}, ae)
+        self.assertIn("blocked", result)
+
+    def test_disabled_from_actions(self):
+        ae = MagicMock()
+        ae.actions = ActionState(file="", runtime="disable", install="")
+        result = _skill_status_display({}, ae)
+        self.assertIn("disabled", result)
+
+    def test_removed_for_enforcement_source(self):
+        result = _skill_status_display({"source": "enforcement"})
+        self.assertIn("removed", result)
+
+    def test_removed_for_scan_history_source(self):
+        result = _skill_status_display({"source": "scan-history"})
+        self.assertIn("removed", result)
+
+    def test_missing_when_no_info(self):
+        result = _skill_status_display({})
+        self.assertIn("missing", result)
+
+    def test_openclaw_disabled_takes_precedence_over_actions(self):
+        ae = MagicMock()
+        ae.actions = ActionState(file="quarantine", runtime="disable", install="block")
+        result = _skill_status_display({"disabled": True}, ae)
+        self.assertIn("disabled", result)
+        self.assertNotIn("quarantined", result)
+
+
+# ---------------------------------------------------------------------------
+# _build_scan_map (CLEAN severity)
+# ---------------------------------------------------------------------------
 
 class TestBuildScanMap(SkillCommandTestBase):
     def test_build_scan_map_empty(self):
-        from defenseclaw.commands.cmd_skill import _build_scan_map
         scan_map = _build_scan_map(self.app.store)
         self.assertEqual(scan_map, {})
 
-    def test_build_scan_map_with_data(self):
-        from defenseclaw.commands.cmd_skill import _build_scan_map
-        import uuid
-
+    def test_build_scan_map_with_findings(self):
         self.app.store.insert_scan_result(
             str(uuid.uuid4()), "skill-scanner", "/path/to/my-skill",
             datetime.now(timezone.utc), 500, 2, "HIGH", "{}",
@@ -332,6 +421,22 @@ class TestBuildScanMap(SkillCommandTestBase):
         self.assertIn("my-skill", scan_map)
         self.assertEqual(scan_map["my-skill"]["max_severity"], "HIGH")
         self.assertEqual(scan_map["my-skill"]["total_findings"], 2)
+        self.assertFalse(scan_map["my-skill"]["clean"])
+
+    def test_build_scan_map_clean_shows_clean(self):
+        """Zero-finding scans should show CLEAN, not INFO."""
+        self.app.store.insert_scan_result(
+            str(uuid.uuid4()), "skill-scanner", "/path/to/clean-skill",
+            datetime.now(timezone.utc), 300, 0, None, "{}",
+        )
+        scan_map = _build_scan_map(self.app.store)
+        self.assertIn("clean-skill", scan_map)
+        self.assertEqual(scan_map["clean-skill"]["max_severity"], "CLEAN")
+        self.assertTrue(scan_map["clean-skill"]["clean"])
+
+    def test_build_scan_map_none_store(self):
+        scan_map = _build_scan_map(None)
+        self.assertEqual(scan_map, {})
 
 
 class TestBuildActionsMap(SkillCommandTestBase):
@@ -346,6 +451,65 @@ class TestBuildActionsMap(SkillCommandTestBase):
         pe.block("skill", "bad-skill", "test")
         actions_map = _build_actions_map(self.app.store)
         self.assertIn("bad-skill", actions_map)
+
+
+# ---------------------------------------------------------------------------
+# skill search
+# ---------------------------------------------------------------------------
+
+class TestSkillSearch(SkillCommandTestBase):
+    @patch("defenseclaw.commands.cmd_skill.subprocess.run")
+    def test_search_success(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="wiki  Wiki  (3.504)\nwiki-local  WikiLocal  (3.392)\n",
+            stderr="",
+        )
+        result = self.invoke(["search", "wiki"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("wiki", result.output)
+        self.assertIn("wiki-local", result.output)
+        mock_run.assert_called_once_with(
+            ["npx", "clawhub", "search", "wiki"],
+            capture_output=True, text=True, timeout=30,
+        )
+
+    @patch("defenseclaw.commands.cmd_skill.subprocess.run")
+    def test_search_no_results(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        result = self.invoke(["search", "zzz_nonexistent"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("No skills found", result.output)
+
+    @patch("defenseclaw.commands.cmd_skill.subprocess.run")
+    def test_search_json_output(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="wiki  Wiki  (3.504)\n",
+            stderr="",
+        )
+        result = self.invoke(["search", "wiki", "--json"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        data = json.loads(result.output)
+        self.assertIsInstance(data, list)
+        self.assertTrue(len(data) >= 1)
+
+    @patch("defenseclaw.commands.cmd_skill.subprocess.run", side_effect=FileNotFoundError)
+    def test_search_npx_not_found(self, _mock):
+        result = self.invoke(["search", "wiki"])
+        self.assertNotEqual(result.exit_code, 0)
+
+    @patch("defenseclaw.commands.cmd_skill.subprocess.run")
+    def test_search_clawhub_failure(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="network error")
+        result = self.invoke(["search", "wiki"])
+        self.assertNotEqual(result.exit_code, 0)
+
+    @patch("defenseclaw.commands.cmd_skill.subprocess.run",
+           side_effect=__import__("subprocess").TimeoutExpired(cmd="npx", timeout=30))
+    def test_search_timeout(self, _mock):
+        result = self.invoke(["search", "wiki"])
+        self.assertNotEqual(result.exit_code, 0)
 
 
 class TestSkillScanRemote(SkillCommandTestBase):

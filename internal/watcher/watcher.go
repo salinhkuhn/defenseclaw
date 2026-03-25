@@ -58,12 +58,13 @@ type AdmissionResult struct {
 // OnAdmission is called after each install event is processed.
 type OnAdmission func(AdmissionResult)
 
-// InstallWatcher monitors OpenClaw skill and MCP directories for new installs
+// InstallWatcher monitors OpenClaw skill directories for new installs
 // and runs the admission gate (block → allow → scan) on each detection.
+// MCP servers are managed via ``defenseclaw mcp set/unset`` rather than
+// filesystem watching.
 type InstallWatcher struct {
 	cfg        *config.Config
 	skillDirs  []string
-	mcpDirs    []string
 	pluginDirs []string
 	store      *audit.Store
 	logger     *audit.Logger
@@ -78,7 +79,7 @@ type InstallWatcher struct {
 
 // New creates an InstallWatcher. The opa parameter may be nil to fall back
 // to the built-in Go admission logic.
-func New(cfg *config.Config, skillDirs, mcpDirs, pluginDirs []string, store *audit.Store, logger *audit.Logger, shell *sandbox.OpenShell, opa *policy.Engine, onAdmit OnAdmission) *InstallWatcher {
+func New(cfg *config.Config, skillDirs, pluginDirs []string, store *audit.Store, logger *audit.Logger, shell *sandbox.OpenShell, opa *policy.Engine, onAdmit OnAdmission) *InstallWatcher {
 	debounce := time.Duration(cfg.Watch.DebounceMs) * time.Millisecond
 	if debounce <= 0 {
 		debounce = 500 * time.Millisecond
@@ -86,7 +87,6 @@ func New(cfg *config.Config, skillDirs, mcpDirs, pluginDirs []string, store *aud
 	return &InstallWatcher{
 		cfg:        cfg,
 		skillDirs:  skillDirs,
-		mcpDirs:    mcpDirs,
 		pluginDirs: pluginDirs,
 		store:      store,
 		logger:     logger,
@@ -114,14 +114,6 @@ func (w *InstallWatcher) Run(ctx context.Context) error {
 		}
 		watched++
 		fmt.Printf("[watch] monitoring skill dir: %s\n", dir)
-	}
-	for _, dir := range w.mcpDirs {
-		if err := ensureAndWatch(fsw, dir); err != nil {
-			fmt.Fprintf(os.Stderr, "[watch] mcp dir %s: %v (skipping)\n", dir, err)
-			continue
-		}
-		watched++
-		fmt.Printf("[watch] monitoring MCP dir:   %s\n", dir)
 	}
 	for _, dir := range w.pluginDirs {
 		if err := ensureAndWatch(fsw, dir); err != nil {
@@ -204,13 +196,6 @@ func (w *InstallWatcher) processPending(ctx context.Context) {
 func (w *InstallWatcher) classifyEvent(path string) InstallEvent {
 	installType := InstallSkill
 	pathAbs, _ := filepath.Abs(path)
-	for _, dir := range w.mcpDirs {
-		abs, _ := filepath.Abs(dir)
-		if strings.HasPrefix(pathAbs, abs) {
-			installType = InstallMCP
-			break
-		}
-	}
 	for _, dir := range w.pluginDirs {
 		abs, _ := filepath.Abs(dir)
 		if strings.HasPrefix(pathAbs, abs) {
@@ -339,7 +324,7 @@ func (w *InstallWatcher) runAdmission(ctx context.Context, evt InstallEvent) Adm
 		_ = w.logger.LogAction("install-rejected", evt.Path,
 			fmt.Sprintf("type=%s severity=%s scanner=%s", targetType, maxSev, s.Name()))
 
-		if w.cfg.Watch.AutoBlock {
+		if w.takeActionFor(evt) {
 			blockReason := fmt.Sprintf("auto-block: watch detected %s findings (scanner=%s)", maxSev, s.Name())
 			_ = pe.Block(targetType, evt.Name, blockReason)
 			pe.SetSourcePath(targetType, evt.Name, evt.Path)
@@ -385,7 +370,7 @@ func (w *InstallWatcher) applyPostScanEnforcement(pe *enforce.PolicyEngine, out 
 		_ = w.logger.LogAction("install-rejected", evt.Path,
 			fmt.Sprintf("type=%s severity=%s scanner=%s", targetType, result.MaxSeverity(), scannerName))
 
-		if w.cfg.Watch.AutoBlock {
+		if w.takeActionFor(evt) {
 			blockReason := fmt.Sprintf("auto-block: watch detected %s findings (scanner=%s)", result.MaxSeverity(), scannerName)
 			_ = pe.Block(targetType, evt.Name, blockReason)
 			pe.SetSourcePath(targetType, evt.Name, evt.Path)
@@ -457,10 +442,23 @@ func (w *InstallWatcher) scannerFor(evt InstallEvent) scanner.Scanner {
 		return scanner.NewSkillScanner(w.cfg.Scanners.SkillScanner)
 	case InstallMCP:
 		return scanner.NewMCPScanner(w.cfg.Scanners.MCPScanner)
+
 	case InstallPlugin:
 		return scanner.NewPluginScanner(w.cfg.Scanners.PluginScanner)
 	default:
 		return nil
+	}
+}
+
+// takeActionFor returns whether enforcement actions should be applied for the
+// given event type, using the per-type gateway watcher config with a fallback
+// to the legacy watch.auto_block flag.
+func (w *InstallWatcher) takeActionFor(evt InstallEvent) bool {
+	switch evt.Type {
+	case InstallSkill:
+		return w.cfg.Gateway.Watcher.Skill.TakeAction
+	default:
+		return w.cfg.Watch.AutoBlock
 	}
 }
 
@@ -497,12 +495,6 @@ func (w *InstallWatcher) isDirectChildDir(path string) bool {
 	parentAbs, _ := filepath.Abs(parent)
 
 	for _, dir := range w.skillDirs {
-		dirAbs, _ := filepath.Abs(dir)
-		if parentAbs == dirAbs {
-			return true
-		}
-	}
-	for _, dir := range w.mcpDirs {
 		dirAbs, _ := filepath.Abs(dir)
 		if parentAbs == dirAbs {
 			return true

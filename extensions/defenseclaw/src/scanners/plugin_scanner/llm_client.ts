@@ -7,7 +7,9 @@
  * The bridge is at cli/defenseclaw/llm.py and accepts JSON on stdin,
  * returns JSON on stdout.
  */
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,11 +48,32 @@ export interface LLMResponse {
 // Client
 // ---------------------------------------------------------------------------
 
+const ALLOWED_PYTHON_NAMES = new Set(["python3", "python", "python3.11", "python3.12", "python3.13"]);
+
+export function validatePythonBinary(raw: string): string {
+  if (ALLOWED_PYTHON_NAMES.has(raw)) {
+    return raw;
+  }
+
+  const resolved = resolve(raw);
+  if (
+    !resolved.startsWith("/") ||
+    resolved.includes("..") ||
+    !existsSync(resolved)
+  ) {
+    throw new Error(
+      `Refusing untrusted python_binary: "${raw}". ` +
+      `Use an absolute path to an existing executable or one of: ${[...ALLOWED_PYTHON_NAMES].join(", ")}`,
+    );
+  }
+  return resolved;
+}
+
 export async function callLLM(
   config: LLMConfig,
   messages: LLMMessage[],
 ): Promise<LLMResponse> {
-  const python = config.pythonBinary ?? "python3";
+  const python = validatePythonBinary(config.pythonBinary ?? "python3");
 
   const request = {
     model: config.model,
@@ -65,8 +88,9 @@ export async function callLLM(
   const input = JSON.stringify(request);
 
   try {
-    const stdout = execSync(
-      `${python} -m defenseclaw.llm`,
+    const stdout = execFileSync(
+      python,
+      ["-m", "defenseclaw.llm"],
       { input, timeout: 120_000, maxBuffer: 10 * 1024 * 1024, encoding: "utf-8" },
     );
 

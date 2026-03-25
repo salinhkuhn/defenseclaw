@@ -158,7 +158,7 @@ class TestDefaultConfig(unittest.TestCase):
         self.assertTrue(cfg.audit_db.endswith("audit.db"))
         self.assertEqual(cfg.claw.mode, "openclaw")
         self.assertEqual(cfg.scanners.skill_scanner.binary, "skill-scanner")
-        self.assertEqual(cfg.scanners.mcp_scanner, "mcp-scanner")
+        self.assertEqual(cfg.scanners.mcp_scanner.binary, "mcp-scanner")
         self.assertEqual(cfg.gateway.port, 18789)
 
 
@@ -199,12 +199,53 @@ class TestClawPaths(unittest.TestCase):
         self.assertFalse(home.startswith("~"))
         self.assertTrue(home.endswith(".openclaw"))
 
-    def test_mcp_dirs(self):
-        cfg = Config(claw=ClawConfig(home_dir="/tmp/test-oc"))
-        dirs = cfg.mcp_dirs()
-        self.assertEqual(len(dirs), 2)
-        self.assertIn("/tmp/test-oc/mcp-servers", dirs)
-        self.assertIn("/tmp/test-oc/mcps", dirs)
+    def test_mcp_servers_from_file(self):
+        from defenseclaw.config import _read_mcp_servers_from_file
+        with tempfile.TemporaryDirectory() as tmpdir:
+            oc_data = {
+                "mcp": {
+                    "servers": {
+                        "test-server": {"command": "npx", "args": ["-y", "test-srv"]},
+                        "remote": {"url": "https://example.com/mcp"},
+                    }
+                }
+            }
+            oc_json = os.path.join(tmpdir, "openclaw.json")
+            with open(oc_json, "w") as f:
+                json.dump(oc_data, f)
+
+            servers = _read_mcp_servers_from_file(oc_json)
+            self.assertEqual(len(servers), 2)
+            by_name = {s.name: s for s in servers}
+            self.assertIn("test-server", by_name)
+            self.assertEqual(by_name["test-server"].command, "npx")
+            self.assertEqual(by_name["remote"].url, "https://example.com/mcp")
+
+    def test_mcp_servers_no_mcp_block(self):
+        from defenseclaw.config import _read_mcp_servers_from_file
+        with tempfile.TemporaryDirectory() as tmpdir:
+            oc_data = {"agents": {"defaults": {}}}
+            oc_json = os.path.join(tmpdir, "openclaw.json")
+            with open(oc_json, "w") as f:
+                json.dump(oc_data, f)
+
+            servers = _read_mcp_servers_from_file(oc_json)
+            self.assertEqual(servers, [])
+
+    def test_mcp_servers_missing_file(self):
+        from defenseclaw.config import _read_mcp_servers_from_file
+        servers = _read_mcp_servers_from_file("/tmp/nonexistent/openclaw.json")
+        self.assertEqual(servers, [])
+
+    def test_parse_mcp_servers_dict(self):
+        from defenseclaw.config import _parse_mcp_servers_dict
+        servers = _parse_mcp_servers_dict({
+            "srv-a": {"command": "npx", "args": ["-y", "srv"]},
+            "srv-b": {"url": "https://example.com", "transport": "sse"},
+        })
+        self.assertEqual(len(servers), 2)
+        by_name = {s.name: s for s in servers}
+        self.assertEqual(by_name["srv-b"].transport, "sse")
 
     def test_skill_dirs_no_openclaw_json(self):
         cfg = Config(claw=ClawConfig(

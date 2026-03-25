@@ -48,7 +48,7 @@ func (a *SkillActionsConfig) ShouldInstallBlock(severity string) bool {
 }
 
 func (a *SkillActionsConfig) Validate() error {
-	entries := []struct {
+	return validateActions("skill_actions", []struct {
 		label  string
 		action SeverityAction
 	}{
@@ -57,26 +57,73 @@ func (a *SkillActionsConfig) Validate() error {
 		{"medium", a.Medium},
 		{"low", a.Low},
 		{"info", a.Info},
-	}
+	})
+}
 
+func DefaultMCPActions() MCPActionsConfig {
+	return MCPActionsConfig{
+		Critical: SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallBlock},
+		High:     SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallBlock},
+		Medium:   SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
+		Low:      SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
+		Info:     SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
+	}
+}
+
+func (a *MCPActionsConfig) ForSeverity(severity string) SeverityAction {
+	switch strings.ToUpper(severity) {
+	case "CRITICAL":
+		return a.Critical
+	case "HIGH":
+		return a.High
+	case "MEDIUM":
+		return a.Medium
+	case "LOW":
+		return a.Low
+	default:
+		return a.Info
+	}
+}
+
+func (a *MCPActionsConfig) ShouldInstallBlock(severity string) bool {
+	return a.ForSeverity(severity).Install == InstallBlock
+}
+
+func (a *MCPActionsConfig) Validate() error {
+	return validateActions("mcp_actions", []struct {
+		label  string
+		action SeverityAction
+	}{
+		{"critical", a.Critical},
+		{"high", a.High},
+		{"medium", a.Medium},
+		{"low", a.Low},
+		{"info", a.Info},
+	})
+}
+
+func validateActions(prefix string, entries []struct {
+	label  string
+	action SeverityAction
+}) error {
 	for _, e := range entries {
 		switch e.action.Runtime {
 		case RuntimeDisable, RuntimeEnable:
 		default:
-			return fmt.Errorf("config: skill_actions.%s.runtime: invalid value %q (must be %q or %q)",
-				e.label, e.action.Runtime, RuntimeDisable, RuntimeEnable)
+			return fmt.Errorf("config: %s.%s.runtime: invalid value %q (must be %q or %q)",
+				prefix, e.label, e.action.Runtime, RuntimeDisable, RuntimeEnable)
 		}
 		switch e.action.File {
 		case FileActionNone, FileActionQuarantine:
 		default:
-			return fmt.Errorf("config: skill_actions.%s.file: invalid value %q (must be %q or %q)",
-				e.label, e.action.File, FileActionNone, FileActionQuarantine)
+			return fmt.Errorf("config: %s.%s.file: invalid value %q (must be %q or %q)",
+				prefix, e.label, e.action.File, FileActionNone, FileActionQuarantine)
 		}
 		switch e.action.Install {
 		case InstallBlock, InstallAllow, InstallNone:
 		default:
-			return fmt.Errorf("config: skill_actions.%s.install: invalid value %q (must be %q, %q, or %q)",
-				e.label, e.action.Install, InstallBlock, InstallAllow, InstallNone)
+			return fmt.Errorf("config: %s.%s.install: invalid value %q (must be %q, %q, or %q)",
+				prefix, e.label, e.action.Install, InstallBlock, InstallAllow, InstallNone)
 		}
 	}
 	return nil

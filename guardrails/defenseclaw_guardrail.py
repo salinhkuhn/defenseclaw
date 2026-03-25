@@ -285,7 +285,7 @@ def _merge_verdicts(
 # Hot-reload: TTL-cached runtime config from sidecar file
 # ---------------------------------------------------------------------------
 
-_runtime_cache: dict[str, Any] = {}
+_runtime_cache: dict[str, Any] | None = None
 _runtime_cache_ts: float = 0.0
 _RUNTIME_CACHE_TTL = 5.0
 
@@ -294,7 +294,7 @@ def _read_runtime_config() -> dict[str, str]:
     """Read guardrail_runtime.json with a 5-second TTL cache."""
     global _runtime_cache, _runtime_cache_ts
     now = time.monotonic()
-    if now - _runtime_cache_ts < _RUNTIME_CACHE_TTL and _runtime_cache:
+    if now - _runtime_cache_ts < _RUNTIME_CACHE_TTL and _runtime_cache is not None:
         return _runtime_cache
 
     data_dir = os.environ.get("DEFENSECLAW_DATA_DIR", os.path.expanduser("~/.defenseclaw"))
@@ -302,9 +302,9 @@ def _read_runtime_config() -> dict[str, str]:
     try:
         with open(runtime_file) as f:
             _runtime_cache = json.load(f)
-            _runtime_cache_ts = now
     except (OSError, json.JSONDecodeError):
-        pass
+        _runtime_cache = {}
+    _runtime_cache_ts = now
     return _runtime_cache
 
 
@@ -634,7 +634,13 @@ class DefenseClawGuardrail(CustomGuardrail):
             accumulated += content_delta
 
             if len(accumulated) - last_scan_len >= scan_interval:
-                mid_verdict = self._scan_local("completion", accumulated)
+                if self.scanner_mode in ("remote", "both"):
+                    response_messages = [{"role": "assistant", "content": accumulated}]
+                    mid_verdict = self._inspect(
+                        "completion", accumulated, response_messages, model=model,
+                    )
+                else:
+                    mid_verdict = self._scan_local("completion", accumulated)
                 if mid_verdict.get("severity") not in ("NONE", None) and self.mode == "action":
                     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
                     print(
@@ -748,9 +754,8 @@ class DefenseClawGuardrail(CustomGuardrail):
         for i, msg in enumerate(messages):
             role = msg.get("role", "?")
             text = self._extract_content(msg)
-            preview = text[:120] + ("..." if len(text) > 120 else "")
             rc = YELLOW if role == "user" else GREEN if role == "assistant" else DIM
-            print(f"  {DIM}[{i}]{RESET} {rc}{role}{RESET}: {preview}", file=sys.stderr)
+            print(f"  {DIM}[{i}]{RESET} {rc}{role}{RESET}: ({len(text)} chars)", file=sys.stderr)
 
         verdict_label = f"{sev_color}{severity}{RESET}"
         if severity == "NONE":
@@ -777,12 +782,11 @@ class DefenseClawGuardrail(CustomGuardrail):
         )
 
         if content:
-            preview = content[:200] + ("..." if len(content) > 200 else "")
-            print(f"  content: {preview}", file=sys.stderr)
+            print(f"  content: ({len(content)} chars)", file=sys.stderr)
 
         if tool_calls:
             for tc in tool_calls:
-                print(f"  tool: {YELLOW}{tc['name']}{RESET}({tc['args'][:80]})", file=sys.stderr)
+                print(f"  tool: {YELLOW}{tc['name']}{RESET} (args: {len(tc.get('args', ''))} chars)", file=sys.stderr)
 
         verdict_label = f"{sev_color}{severity}{RESET}"
         if severity == "NONE":

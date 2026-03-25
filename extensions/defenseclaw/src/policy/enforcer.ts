@@ -380,12 +380,13 @@ function mapOPAVerdict(v: string): Verdict {
 function verdictToSeverity(verdict: Verdict): string {
   switch (verdict) {
     case "blocked":
+      return "CRITICAL";
     case "rejected":
       return "HIGH";
     case "scan-error":
-      return "MEDIUM";
+      return "ERROR";
     case "warning":
-      return "LOW";
+      return "MEDIUM";
     case "allowed":
     case "clean":
       return "INFO";

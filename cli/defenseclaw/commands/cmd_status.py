@@ -41,7 +41,7 @@ def status(app: AppContext) -> None:
     click.echo("  Scanners:")
     scanner_bins = [
         ("skill-scanner", cfg.scanners.skill_scanner.binary),
-        ("mcp-scanner", cfg.scanners.mcp_scanner),
+        ("mcp-scanner", cfg.scanners.mcp_scanner.binary),
         ("cisco-aibom", cfg.scanners.aibom),
         ("codeguard", "built-in"),
     ]

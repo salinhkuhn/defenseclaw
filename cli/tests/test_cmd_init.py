@@ -207,25 +207,19 @@ class TestInitDoesNotCreateExternalDirs(unittest.TestCase):
 
 
 class TestInstallScanners(unittest.TestCase):
-    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value="/usr/local/bin/uv")
-    @patch("defenseclaw.commands.cmd_init._install_with_uv", return_value=True)
-    def test_install_scanners_installs_missing(self, mock_install, mock_which):
+    @patch("defenseclaw.commands.cmd_init._verify_scanner_sdk")
+    def test_install_scanners_verifies_sdks(self, mock_verify):
         from defenseclaw.commands.cmd_init import _install_scanners
         from defenseclaw.config import default_config
 
         cfg = default_config()
         logger = MagicMock()
 
-        def which_side_effect(binary):
-            if binary == "uv":
-                return "/usr/local/bin/uv"
-            return None
-
-        mock_which.side_effect = which_side_effect
-
-        # Should not raise
         _install_scanners(cfg, logger, skip=False)
-        self.assertTrue(mock_install.called)
+        self.assertEqual(mock_verify.call_count, 2)
+        call_names = [c[0][0] for c in mock_verify.call_args_list]
+        self.assertIn("skill-scanner", call_names)
+        self.assertIn("mcp-scanner", call_names)
 
     def test_install_scanners_skip(self):
         from defenseclaw.commands.cmd_init import _install_scanners

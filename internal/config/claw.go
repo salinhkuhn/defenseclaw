@@ -1,8 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -19,6 +22,16 @@ type openclawConfig struct {
 			ExtraDirs []string `json:"extraDirs"`
 		} `json:"load"`
 	} `json:"skills"`
+}
+
+// MCPServerEntry represents a single MCP server from openclaw.json mcp.servers.
+type MCPServerEntry struct {
+	Name      string            `json:"name"`
+	Command   string            `json:"command,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Transport string            `json:"transport,omitempty"`
 }
 
 // expandPath expands ~ to home directory.
@@ -46,39 +59,109 @@ func readOpenclawConfig(configFile string) (*openclawConfig, error) {
 	return &oc, nil
 }
 
+// ReadMCPServers returns the MCP servers configured under mcp.servers in
+// openclaw.json. It tries `openclaw config get mcp.servers` first (safe,
+// schema-validated) and falls back to reading the file directly when the
+// CLI is unavailable or returns an error (e.g. OpenClaw < 2026.3.24).
+func (c *Config) ReadMCPServers() ([]MCPServerEntry, error) {
+	entries, err := readMCPServersViaCLI()
+	if err == nil {
+		return entries, nil
+	}
+	return readMCPServersFromFile(c.Claw.ConfigFile)
+}
+
+func readMCPServersViaCLI() ([]MCPServerEntry, error) {
+	cmd := exec.Command("openclaw", "config", "get", "mcp.servers")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("config: openclaw config get mcp.servers: %w", err)
+	}
+	return parseMCPServersJSON(stdout.Bytes())
+}
+
+func readMCPServersFromFile(configFile string) ([]MCPServerEntry, error) {
+	path := expandPath(configFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("config: read %s: %w", path, err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("config: parse %s: %w", path, err)
+	}
+
+	mcpBlock, ok := raw["mcp"]
+	if !ok {
+		return nil, nil
+	}
+
+	var mcpObj map[string]json.RawMessage
+	if err := json.Unmarshal(mcpBlock, &mcpObj); err != nil {
+		return nil, fmt.Errorf("config: parse mcp block: %w", err)
+	}
+
+	serversBlock, ok := mcpObj["servers"]
+	if !ok {
+		return nil, nil
+	}
+
+	return parseMCPServersJSON(serversBlock)
+}
+
+func parseMCPServersJSON(data []byte) ([]MCPServerEntry, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+
+	var servers map[string]struct {
+		Command   string            `json:"command"`
+		Args      []string          `json:"args"`
+		Env       map[string]string `json:"env"`
+		URL       string            `json:"url"`
+		Transport string            `json:"transport"`
+	}
+	if err := json.Unmarshal(trimmed, &servers); err != nil {
+		return nil, fmt.Errorf("config: parse mcp servers: %w", err)
+	}
+
+	entries := make([]MCPServerEntry, 0, len(servers))
+	for name, s := range servers {
+		entries = append(entries, MCPServerEntry{
+			Name:      name,
+			Command:   s.Command,
+			Args:      s.Args,
+			Env:       s.Env,
+			URL:       s.URL,
+			Transport: s.Transport,
+		})
+	}
+	return entries, nil
+}
+
 // SkillDirs returns the skill directories for the active claw mode.
 // Order: workspace/skills → extraDirs from openclaw.json → home_dir/skills
 func (c *Config) SkillDirs() []string {
 	homeDir := expandPath(c.Claw.HomeDir)
 	var dirs []string
 
-	// Read openclaw.json for workspace and extraDirs
 	if oc, err := readOpenclawConfig(c.Claw.ConfigFile); err == nil {
-		// Workspace skills
 		if oc.Agents.Defaults.Workspace != "" {
 			ws := expandPath(oc.Agents.Defaults.Workspace)
 			dirs = append(dirs, filepath.Join(ws, "skills"))
 		}
-
-		// Extra skill directories
 		for _, d := range oc.Skills.Load.ExtraDirs {
 			dirs = append(dirs, expandPath(d))
 		}
 	}
 
-	// Global skills in home_dir
 	dirs = append(dirs, filepath.Join(homeDir, "skills"))
 
 	return dedup(dirs)
-}
-
-// MCPDirs returns the MCP directories for the active claw mode.
-func (c *Config) MCPDirs() []string {
-	homeDir := expandPath(c.Claw.HomeDir)
-	return []string{
-		filepath.Join(homeDir, "mcp-servers"),
-		filepath.Join(homeDir, "mcps"),
-	}
 }
 
 // InstalledSkillCandidates returns possible on-disk paths for a named skill,
@@ -140,18 +223,4 @@ func SkillDirsForMode(mode ClawMode, homeDir string) []string {
 
 	dirs = append(dirs, filepath.Join(homeDir, "skills"))
 	return dedup(dirs)
-}
-
-// MCPDirsForMode returns MCP directories for a given mode.
-// Used when config is not yet available.
-func MCPDirsForMode(mode ClawMode, homeDir string) []string {
-	if homeDir == "" {
-		homeDir = "~/.openclaw"
-	}
-	homeDir = expandPath(homeDir)
-
-	return []string{
-		filepath.Join(homeDir, "mcp-servers"),
-		filepath.Join(homeDir, "mcps"),
-	}
 }

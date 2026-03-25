@@ -61,8 +61,53 @@ test_observe_mode_never_blocks if {
 		"content_length": 200,
 	}
 
-	result.action == "allow"
+	result.action == "alert"
 	result.severity == "HIGH"
+}
+
+test_observe_mode_medium_still_alerts if {
+	result := guardrail with input as {
+		"direction": "prompt",
+		"model": "test-model",
+		"mode": "observe",
+		"scanner_mode": "local",
+		"local_result": {"action": "alert", "severity": "MEDIUM", "findings": ["sk-"], "reason": "matched: sk-"},
+		"cisco_result": null,
+		"content_length": 150,
+	}
+
+	result.action == "alert"
+	result.severity == "MEDIUM"
+}
+
+test_observe_mode_critical_alerts_not_blocks if {
+	result := guardrail with input as {
+		"direction": "prompt",
+		"model": "test-model",
+		"mode": "observe",
+		"scanner_mode": "local",
+		"local_result": {"action": "block", "severity": "CRITICAL", "findings": ["jailbreak"], "reason": "matched: jailbreak"},
+		"cisco_result": null,
+		"content_length": 200,
+	}
+
+	result.action == "alert"
+	result.severity == "CRITICAL"
+}
+
+test_observe_mode_clean_stays_allow if {
+	result := guardrail with input as {
+		"direction": "prompt",
+		"model": "test-model",
+		"mode": "observe",
+		"scanner_mode": "local",
+		"local_result": {"action": "allow", "severity": "NONE", "findings": [], "reason": ""},
+		"cisco_result": null,
+		"content_length": 100,
+	}
+
+	result.action == "allow"
+	result.severity == "NONE"
 }
 
 test_cisco_only_block if {

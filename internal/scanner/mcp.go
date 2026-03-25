@@ -6,29 +6,88 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
+
+	"github.com/defenseclaw/defenseclaw/internal/config"
 )
 
 type MCPScanner struct {
-	BinaryPath string
+	Config config.MCPScannerConfig
 }
 
-func NewMCPScanner(binaryPath string) *MCPScanner {
-	if binaryPath == "" {
-		binaryPath = "mcp-scanner"
+func NewMCPScanner(cfg config.MCPScannerConfig) *MCPScanner {
+	if cfg.Binary == "" {
+		cfg.Binary = "mcp-scanner"
 	}
-	return &MCPScanner{BinaryPath: binaryPath}
+	return &MCPScanner{Config: cfg}
 }
 
 func (s *MCPScanner) Name() string              { return "mcp-scanner" }
 func (s *MCPScanner) Version() string            { return "1.0.0" }
 func (s *MCPScanner) SupportedTargets() []string { return []string{"mcp"} }
 
+func (s *MCPScanner) buildArgs(target string) []string {
+	args := []string{"scan", "--format", "json"}
+
+	if s.Config.Analyzers != "" {
+		args = append(args, "--analyzers", s.Config.Analyzers)
+	}
+	if s.Config.ScanPrompts {
+		args = append(args, "--scan-prompts")
+	}
+	if s.Config.ScanResources {
+		args = append(args, "--scan-resources")
+	}
+	if s.Config.ScanInstructions {
+		args = append(args, "--scan-instructions")
+	}
+
+	args = append(args, target)
+	return args
+}
+
+func (s *MCPScanner) scanEnv() []string {
+	env := os.Environ()
+
+	inject := []struct {
+		envVar string
+		value  string
+	}{
+		{"MCP_SCANNER_API_KEY", s.Config.APIKey},
+		{"MCP_SCANNER_ENDPOINT", s.Config.EndpointURL},
+		{"MCP_SCANNER_LLM_API_KEY", s.Config.LLMAPIKey},
+		{"MCP_SCANNER_LLM_MODEL", s.Config.LLMModel},
+		{"MCP_SCANNER_LLM_BASE_URL", s.Config.LLMBaseURL},
+	}
+
+	existing := make(map[string]bool)
+	for _, e := range env {
+		for i := 0; i < len(e); i++ {
+			if e[i] == '=' {
+				existing[e[:i]] = true
+				break
+			}
+		}
+	}
+
+	for _, kv := range inject {
+		if kv.value != "" && !existing[kv.envVar] {
+			env = append(env, kv.envVar+"="+kv.value)
+		}
+	}
+
+	return env
+}
+
 func (s *MCPScanner) Scan(ctx context.Context, target string) (*ScanResult, error) {
 	start := time.Now()
 
-	cmd := exec.CommandContext(ctx, s.BinaryPath, "scan", "--format", "json", target)
+	args := s.buildArgs(target)
+	cmd := exec.CommandContext(ctx, s.Config.Binary, args...)
+	cmd.Env = s.scanEnv()
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -45,7 +104,7 @@ func (s *MCPScanner) Scan(ctx context.Context, target string) (*ScanResult, erro
 
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			return nil, fmt.Errorf("scanner: %s not found at %q — install with: uv tool install cisco-ai-mcp-scanner", s.Name(), s.BinaryPath)
+			return nil, fmt.Errorf("scanner: %s not found at %q — install with: uv tool install cisco-ai-mcp-scanner", s.Name(), s.Config.Binary)
 		}
 		if stdout.Len() == 0 {
 			return nil, fmt.Errorf("scanner: %s failed: %s", s.Name(), stderr.String())

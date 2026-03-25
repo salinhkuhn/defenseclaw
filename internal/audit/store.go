@@ -526,7 +526,7 @@ func (s *Store) ListAlerts(limit int) ([]Event, error) {
 	rows, err := s.db.Query(
 		`SELECT id, timestamp, action, target, actor, details, severity
 		 FROM audit_events
-		 WHERE severity IN ('CRITICAL','HIGH','MEDIUM','LOW')
+		 WHERE severity IN ('CRITICAL','HIGH','MEDIUM','LOW','ERROR')
 		   AND action NOT LIKE 'dismiss%'
 		 ORDER BY timestamp DESC LIMIT ?`, limit,
 	)

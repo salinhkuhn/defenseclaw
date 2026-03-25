@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/defenseclaw/defenseclaw/internal/audit"
@@ -33,6 +34,11 @@ type APIServer struct {
 	addr       string
 	scannerCfg *config.Config
 	otel       *telemetry.Provider
+
+	// cfgMu protects mutable fields in scannerCfg.Guardrail (Mode,
+	// ScannerMode) which can be changed at runtime via the PATCH
+	// /v1/guardrail/config endpoint while other goroutines read them.
+	cfgMu sync.RWMutex
 }
 
 // SetOTelProvider attaches the OTel provider so guardrail events
@@ -76,6 +82,7 @@ func (a *APIServer) Run(ctx context.Context) error {
 	mux.HandleFunc("/mcps", a.handleMCPs)
 	mux.HandleFunc("/tools/catalog", a.handleToolsCatalog)
 	mux.HandleFunc("/v1/skill/scan", a.handleSkillScan)
+	mux.HandleFunc("/v1/mcp/scan", a.handleMCPScan)
 	mux.HandleFunc("/v1/skill/fetch", a.handleSkillFetch)
 	mux.HandleFunc("/v1/guardrail/event", a.handleGuardrailEvent)
 	mux.HandleFunc("/v1/guardrail/evaluate", a.handleGuardrailEvaluate)
@@ -576,28 +583,17 @@ func (a *APIServer) handleMCPs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if a.scannerCfg == nil {
-		a.writeJSON(w, http.StatusOK, []string{})
+		a.writeJSON(w, http.StatusOK, []config.MCPServerEntry{})
 		return
 	}
 
-	seen := make(map[string]bool)
-	var names []string
-	for _, dir := range a.scannerCfg.MCPDirs() {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			name := entry.Name()
-			if seen[name] {
-				continue
-			}
-			seen[name] = true
-			names = append(names, name)
-		}
+	servers, err := a.scannerCfg.ReadMCPServers()
+	if err != nil {
+		a.writeJSON(w, http.StatusOK, []config.MCPServerEntry{})
+		return
 	}
 
-	a.writeJSON(w, http.StatusOK, names)
+	a.writeJSON(w, http.StatusOK, servers)
 }
 
 func (a *APIServer) handleToolsCatalog(w http.ResponseWriter, r *http.Request) {
@@ -677,6 +673,55 @@ func (a *APIServer) handleSkillScan(w http.ResponseWriter, r *http.Request) {
 
 	if a.logger != nil {
 		_ = a.logger.LogAction("api-skill-scan", req.Target, fmt.Sprintf("findings=%d max=%s", len(result.Findings), result.MaxSeverity()))
+		_ = a.logger.LogScanWithVerdict(result, "")
+	}
+
+	a.writeJSON(w, http.StatusOK, result)
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/mcp/scan — run MCP scanner on a target (URL or local path)
+// ---------------------------------------------------------------------------
+
+type mcpScanRequest struct {
+	Target string `json:"target"`
+	Name   string `json:"name"`
+}
+
+func (a *APIServer) handleMCPScan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req mcpScanRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if req.Target == "" {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target is required"})
+		return
+	}
+
+	if a.scannerCfg == nil {
+		a.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "scanner not configured"})
+		return
+	}
+
+	ms := scanner.NewMCPScanner(a.scannerCfg.Scanners.MCPScanner)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+
+	result, err := ms.Scan(ctx, req.Target)
+	if err != nil {
+		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if a.logger != nil {
+		_ = a.logger.LogAction("api-mcp-scan", req.Target, fmt.Sprintf("findings=%d max=%s", len(result.Findings), result.MaxSeverity()))
 		_ = a.logger.LogScanWithVerdict(result, "")
 	}
 
@@ -924,8 +969,10 @@ func (a *APIServer) handleGuardrailConfig(w http.ResponseWriter, r *http.Request
 			"scanner_mode": "local",
 		}
 		if a.scannerCfg != nil {
+			a.cfgMu.RLock()
 			cfg["mode"] = a.scannerCfg.Guardrail.Mode
 			cfg["scanner_mode"] = a.scannerCfg.Guardrail.ScannerMode
+			a.cfgMu.RUnlock()
 		}
 		a.writeJSON(w, http.StatusOK, cfg)
 
@@ -941,6 +988,11 @@ func (a *APIServer) handleGuardrailConfig(w http.ResponseWriter, r *http.Request
 			return
 		}
 
+		a.cfgMu.Lock()
+
+		oldMode := a.scannerCfg.Guardrail.Mode
+		oldScannerMode := a.scannerCfg.Guardrail.ScannerMode
+
 		changed := []string{}
 		if mode, ok := req["mode"]; ok && (mode == "observe" || mode == "action") {
 			a.scannerCfg.Guardrail.Mode = mode
@@ -952,25 +1004,33 @@ func (a *APIServer) handleGuardrailConfig(w http.ResponseWriter, r *http.Request
 		}
 
 		if len(changed) == 0 {
+			a.cfgMu.Unlock()
 			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no valid fields to update"})
 			return
 		}
 
 		if err := a.writeGuardrailRuntime(); err != nil {
+			a.scannerCfg.Guardrail.Mode = oldMode
+			a.scannerCfg.Guardrail.ScannerMode = oldScannerMode
+			a.cfgMu.Unlock()
 			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+
+		resp := map[string]interface{}{
+			"status":       "updated",
+			"changed":      changed,
+			"mode":         a.scannerCfg.Guardrail.Mode,
+			"scanner_mode": a.scannerCfg.Guardrail.ScannerMode,
+		}
+
+		a.cfgMu.Unlock()
 
 		if a.logger != nil {
 			_ = a.logger.LogAction("guardrail-config-reload", "", strings.Join(changed, " "))
 		}
 
-		a.writeJSON(w, http.StatusOK, map[string]interface{}{
-			"status":       "updated",
-			"changed":      changed,
-			"mode":         a.scannerCfg.Guardrail.Mode,
-			"scanner_mode": a.scannerCfg.Guardrail.ScannerMode,
-		})
+		a.writeJSON(w, http.StatusOK, resp)
 
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1019,6 +1079,10 @@ func (a *APIServer) evaluateGuardrailPolicy(ctx context.Context, input policy.Gu
 		if res.Severity != "NONE" {
 			sources = append(sources, "scanner")
 		}
+	}
+
+	if input.Mode == "observe" && action == "block" {
+		action = "alert"
 	}
 
 	return &policy.GuardrailOutput{

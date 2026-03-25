@@ -13,16 +13,12 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/sandbox"
 )
 
-func setupTestEnv(t *testing.T) (cfg *config.Config, store *audit.Store, logger *audit.Logger, skillDir, mcpDir string) {
+func setupTestEnv(t *testing.T) (cfg *config.Config, store *audit.Store, logger *audit.Logger, skillDir string) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
 	skillDir = filepath.Join(tmpDir, "skills")
-	mcpDir = filepath.Join(tmpDir, "mcps")
 	if err := os.MkdirAll(skillDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(mcpDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
@@ -45,7 +41,7 @@ func setupTestEnv(t *testing.T) (cfg *config.Config, store *audit.Store, logger 
 		PolicyDir:     filepath.Join(tmpDir, "policies"),
 		Scanners: config.ScannersConfig{
 			SkillScanner: config.SkillScannerConfig{Binary: "skill-scanner"},
-			MCPScanner:   "mcp-scanner",
+			MCPScanner:   config.MCPScannerConfig{Binary: "mcp-scanner"},
 		},
 		OpenShell: config.OpenShellConfig{
 			Binary:    "openshell",
@@ -58,13 +54,13 @@ func setupTestEnv(t *testing.T) (cfg *config.Config, store *audit.Store, logger 
 		SkillActions: config.DefaultSkillActions(),
 	}
 
-	return cfg, store, logger, skillDir, mcpDir
+	return cfg, store, logger, skillDir
 }
 
 func TestClassifyEvent_SkillDir(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
+	cfg, store, logger, skillDir := setupTestEnv(t)
 	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, nil, store, logger, shell, nil, nil)
+	w := New(cfg, []string{skillDir}, nil, store, logger, shell, nil, nil)
 
 	evt := w.classifyEvent(filepath.Join(skillDir, "my-skill"))
 	if evt.Type != InstallSkill {
@@ -75,29 +71,15 @@ func TestClassifyEvent_SkillDir(t *testing.T) {
 	}
 }
 
-func TestClassifyEvent_MCPDir(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
-	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, nil, store, logger, shell, nil, nil)
-
-	evt := w.classifyEvent(filepath.Join(mcpDir, "my-server.json"))
-	if evt.Type != InstallMCP {
-		t.Errorf("expected type %q, got %q", InstallMCP, evt.Type)
-	}
-	if evt.Name != "my-server.json" {
-		t.Errorf("expected name %q, got %q", "my-server.json", evt.Name)
-	}
-}
-
 func TestAdmission_BlockedSkill(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
+	cfg, store, logger, skillDir := setupTestEnv(t)
 	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
 
 	if err := store.SetActionField("skill", "evil-skill", "install", "block", "known malicious"); err != nil {
 		t.Fatal(err)
 	}
 
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, nil, store, logger, shell, nil, nil)
+	w := New(cfg, []string{skillDir}, nil, store, logger, shell, nil, nil)
 
 	skillPath := filepath.Join(skillDir, "evil-skill")
 	if err := os.MkdirAll(skillPath, 0o700); err != nil {
@@ -113,14 +95,14 @@ func TestAdmission_BlockedSkill(t *testing.T) {
 }
 
 func TestAdmission_AllowedSkill(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
+	cfg, store, logger, skillDir := setupTestEnv(t)
 	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
 
 	if err := store.SetActionField("skill", "trusted-skill", "install", "allow", "pre-approved"); err != nil {
 		t.Fatal(err)
 	}
 
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, nil, store, logger, shell, nil, nil)
+	w := New(cfg, []string{skillDir}, nil, store, logger, shell, nil, nil)
 
 	skillPath := filepath.Join(skillDir, "trusted-skill")
 	if err := os.MkdirAll(skillPath, 0o700); err != nil {
@@ -135,56 +117,10 @@ func TestAdmission_AllowedSkill(t *testing.T) {
 	}
 }
 
-func TestAdmission_BlockedMCP(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
-	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
-
-	if err := store.SetActionField("mcp", "rogue-server", "install", "block", "compromised"); err != nil {
-		t.Fatal(err)
-	}
-
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, nil, store, logger, shell, nil, nil)
-
-	mcpPath := filepath.Join(mcpDir, "rogue-server")
-	if err := os.WriteFile(mcpPath, []byte(`{}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	evt := InstallEvent{Type: InstallMCP, Name: "rogue-server", Path: mcpPath, Timestamp: time.Now()}
-	result := w.runAdmission(context.Background(), evt)
-
-	if result.Verdict != VerdictBlocked {
-		t.Errorf("expected verdict %q, got %q", VerdictBlocked, result.Verdict)
-	}
-}
-
-func TestAdmission_AllowedMCP(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
-	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
-
-	if err := store.SetActionField("mcp", "approved-server", "install", "allow", "vetted"); err != nil {
-		t.Fatal(err)
-	}
-
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, nil, store, logger, shell, nil, nil)
-
-	mcpPath := filepath.Join(mcpDir, "approved-server")
-	if err := os.WriteFile(mcpPath, []byte(`{}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	evt := InstallEvent{Type: InstallMCP, Name: "approved-server", Path: mcpPath, Timestamp: time.Now()}
-	result := w.runAdmission(context.Background(), evt)
-
-	if result.Verdict != VerdictAllowed {
-		t.Errorf("expected verdict %q, got %q", VerdictAllowed, result.Verdict)
-	}
-}
-
 func TestAdmission_ScanError_NoScanner(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
+	cfg, store, logger, skillDir := setupTestEnv(t)
 	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, nil, store, logger, shell, nil, nil)
+	w := New(cfg, []string{skillDir}, nil, store, logger, shell, nil, nil)
 
 	skillPath := filepath.Join(skillDir, "unknown-skill")
 	if err := os.MkdirAll(skillPath, 0o700); err != nil {
@@ -199,77 +135,8 @@ func TestAdmission_ScanError_NoScanner(t *testing.T) {
 	}
 }
 
-func TestWatcher_DetectsNewMCPDir(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
-	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
-
-	if err := store.SetActionField("mcp", "detected-server", "install", "block", "test"); err != nil {
-		t.Fatal(err)
-	}
-
-	var mu sync.Mutex
-	var results []AdmissionResult
-
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, nil, store, logger, shell, nil, func(r AdmissionResult) {
-		mu.Lock()
-		results = append(results, r)
-		mu.Unlock()
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- w.Run(ctx)
-	}()
-
-	time.Sleep(500 * time.Millisecond)
-
-	dirPath := filepath.Join(mcpDir, "detected-server")
-	if err := os.MkdirAll(dirPath, 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	deadline := time.After(5 * time.Second)
-	for {
-		mu.Lock()
-		n := len(results)
-		mu.Unlock()
-		if n > 0 {
-			break
-		}
-		select {
-		case <-deadline:
-			cancel()
-			<-errCh
-			t.Fatal("timed out waiting for admission result")
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-
-	cancel()
-	<-errCh
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	found := false
-	for _, r := range results {
-		if r.Event.Name == "detected-server" {
-			found = true
-			if r.Verdict != VerdictBlocked {
-				t.Errorf("expected verdict %q for blocked server, got %q", VerdictBlocked, r.Verdict)
-			}
-		}
-	}
-	if !found {
-		t.Error("admission result for 'detected-server' not found")
-	}
-}
-
 func TestWatcher_DetectsNewDirectory(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
+	cfg, store, logger, skillDir := setupTestEnv(t)
 	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
 
 	if err := store.SetActionField("skill", "new-skill", "install", "allow", "pre-approved"); err != nil {
@@ -279,7 +146,7 @@ func TestWatcher_DetectsNewDirectory(t *testing.T) {
 	var mu sync.Mutex
 	var results []AdmissionResult
 
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, nil, store, logger, shell, nil, func(r AdmissionResult) {
+	w := New(cfg, []string{skillDir}, nil, store, logger, shell, nil, func(r AdmissionResult) {
 		mu.Lock()
 		results = append(results, r)
 		mu.Unlock()
@@ -337,7 +204,7 @@ func TestWatcher_DetectsNewDirectory(t *testing.T) {
 }
 
 func TestAdmission_GatePrecedence_BlockBeatsAllow(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
+	cfg, store, logger, skillDir := setupTestEnv(t)
 	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
 
 	// With the unified table, setting install to "block" after "allow" replaces it.
@@ -346,7 +213,7 @@ func TestAdmission_GatePrecedence_BlockBeatsAllow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, nil, store, logger, shell, nil, nil)
+	w := New(cfg, []string{skillDir}, nil, store, logger, shell, nil, nil)
 
 	skillPath := filepath.Join(skillDir, "conflict-skill")
 	if err := os.MkdirAll(skillPath, 0o700); err != nil {
@@ -362,7 +229,7 @@ func TestAdmission_GatePrecedence_BlockBeatsAllow(t *testing.T) {
 }
 
 func TestActionState_IndependentDimensions(t *testing.T) {
-	_, store, _, _, _ := setupTestEnv(t)
+	_, store, _, _ := setupTestEnv(t)
 
 	// Set install to block
 	if err := store.SetActionField("skill", "multi-action", "install", "block", "blocked"); err != nil {
@@ -396,7 +263,7 @@ func TestActionState_IndependentDimensions(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFullQuarantineFlow_Skill(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
+	cfg, store, logger, skillDir := setupTestEnv(t)
 	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
 
 	// Create a skill directory with files
@@ -409,7 +276,7 @@ func TestFullQuarantineFlow_Skill(t *testing.T) {
 	}
 
 	var result AdmissionResult
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, nil, store, logger, shell, nil, func(r AdmissionResult) {
+	w := New(cfg, []string{skillDir}, nil, store, logger, shell, nil, func(r AdmissionResult) {
 		result = r
 	})
 
@@ -453,7 +320,7 @@ func TestFullQuarantineFlow_Skill(t *testing.T) {
 }
 
 func TestFullQuarantineFlow_Plugin(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
+	cfg, store, logger, skillDir := setupTestEnv(t)
 	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
 
 	pluginDir := filepath.Join(cfg.DataDir, "plugins")
@@ -476,7 +343,7 @@ func TestFullQuarantineFlow_Plugin(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, []string{pluginDir}, store, logger, shell, nil, nil)
+	w := New(cfg, []string{skillDir}, []string{pluginDir}, store, logger, shell, nil, nil)
 
 	evt := InstallEvent{Type: InstallPlugin, Name: "malicious-plugin", Path: pluginPath, Timestamp: time.Now()}
 	result := w.runAdmission(context.Background(), evt)
@@ -507,7 +374,7 @@ func TestFullQuarantineFlow_Plugin(t *testing.T) {
 }
 
 func TestFullQuarantineFlow_SQLiteState(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
+	cfg, store, logger, skillDir := setupTestEnv(t)
 	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
 
 	skillPath := filepath.Join(skillDir, "tracked-skill")
@@ -529,7 +396,7 @@ func TestFullQuarantineFlow_SQLiteState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, nil, store, logger, shell, nil, nil)
+	w := New(cfg, []string{skillDir}, nil, store, logger, shell, nil, nil)
 
 	evt := InstallEvent{Type: InstallSkill, Name: "tracked-skill", Path: skillPath, Timestamp: time.Now()}
 	result := w.runAdmission(context.Background(), evt)
@@ -564,7 +431,7 @@ func TestFullQuarantineFlow_SQLiteState(t *testing.T) {
 }
 
 func TestAdmission_AllowedSkip_NoQuarantine(t *testing.T) {
-	cfg, store, logger, skillDir, mcpDir := setupTestEnv(t)
+	cfg, store, logger, skillDir := setupTestEnv(t)
 	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
 
 	skillPath := filepath.Join(skillDir, "safe-skill")
@@ -580,7 +447,7 @@ func TestAdmission_AllowedSkip_NoQuarantine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := New(cfg, []string{skillDir}, []string{mcpDir}, nil, store, logger, shell, nil, nil)
+	w := New(cfg, []string{skillDir}, nil, store, logger, shell, nil, nil)
 
 	evt := InstallEvent{Type: InstallSkill, Name: "safe-skill", Path: skillPath, Timestamp: time.Now()}
 	result := w.runAdmission(context.Background(), evt)
@@ -602,7 +469,7 @@ func TestAdmission_AllowedSkip_NoQuarantine(t *testing.T) {
 }
 
 func TestActionState_InstallOverwrite(t *testing.T) {
-	_, store, _, _, _ := setupTestEnv(t)
+	_, store, _, _ := setupTestEnv(t)
 
 	if err := store.SetActionField("skill", "flip-skill", "install", "block", "blocked"); err != nil {
 		t.Fatal(err)

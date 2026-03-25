@@ -54,7 +54,7 @@ severity := effective_severity
 # Priority: observe override > advisory downgrade > block > alert > allow
 # Using else-chain to avoid conflict errors.
 
-action := "allow" if {
+action := "alert" if {
 	input.mode == "observe"
 	_highest_sev_rank >= data.guardrail.block_threshold
 } else := "alert" if {

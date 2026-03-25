@@ -191,17 +191,13 @@ func (s *Sidecar) runWatcher(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "[sidecar] watcher: skill watching disabled\n")
 	}
 
-	// MCP dirs only when a gateway.watcher.mcp section is added in the future.
-	// Until then, no MCP watching from the sidecar.
-	var mcpDirs []string
-
 	// Plugin dirs from the config plugin_dir.
 	var pluginDirs []string
 	if s.cfg.PluginDir != "" {
 		pluginDirs = []string{s.cfg.PluginDir}
 	}
 
-	if len(skillDirs) == 0 && len(mcpDirs) == 0 && len(pluginDirs) == 0 {
+	if len(skillDirs) == 0 && len(pluginDirs) == 0 {
 		s.health.SetWatcher(StateError, "no directories configured", nil)
 		fmt.Fprintf(os.Stderr, "[sidecar] watcher: no directories to watch\n")
 		<-ctx.Done()
@@ -209,8 +205,7 @@ func (s *Sidecar) runWatcher(ctx context.Context) error {
 	}
 
 	s.health.SetWatcher(StateStarting, "", map[string]interface{}{
-		"skill_dirs":       len(skillDirs),
-		"mcp_dirs":         len(mcpDirs),
+		"skill_dirs":        len(skillDirs),
 		"skill_take_action": wcfg.Skill.TakeAction,
 	})
 
@@ -229,16 +224,15 @@ func (s *Sidecar) runWatcher(ctx context.Context) error {
 		}
 	}
 
-	w := watcher.New(s.cfg, skillDirs, mcpDirs, pluginDirs, s.store, s.logger, s.shell, opa, func(r watcher.AdmissionResult) {
+	w := watcher.New(s.cfg, skillDirs, pluginDirs, s.store, s.logger, s.shell, opa, func(r watcher.AdmissionResult) {
 		s.handleAdmissionResult(r)
 	})
 
-	fmt.Fprintf(os.Stderr, "[sidecar] watcher starting (%d skill dirs, %d mcp dirs, skill_take_action=%v)\n",
-		len(skillDirs), len(mcpDirs), wcfg.Skill.TakeAction)
+	fmt.Fprintf(os.Stderr, "[sidecar] watcher starting (%d skill dirs, skill_take_action=%v)\n",
+		len(skillDirs), wcfg.Skill.TakeAction)
 
 	s.health.SetWatcher(StateRunning, "", map[string]interface{}{
-		"skill_dirs":       len(skillDirs),
-		"mcp_dirs":         len(mcpDirs),
+		"skill_dirs":        len(skillDirs),
 		"skill_take_action": wcfg.Skill.TakeAction,
 	})
 
@@ -247,8 +241,9 @@ func (s *Sidecar) runWatcher(ctx context.Context) error {
 	return err
 }
 
-// handleAdmissionResult processes watcher verdicts. For blocked/rejected skills,
-// it also disables them at the gateway level when take_action is enabled.
+// handleAdmissionResult processes watcher verdicts. For blocked/rejected
+// skills and MCP servers, it disables them at the gateway level when the
+// corresponding take_action flag is enabled.
 func (s *Sidecar) handleAdmissionResult(r watcher.AdmissionResult) {
 	fmt.Fprintf(os.Stderr, "[sidecar] watcher verdict: %s %s — %s (%s)\n",
 		r.Event.Type, r.Event.Name, r.Verdict, r.Reason)
@@ -262,29 +257,31 @@ func (s *Sidecar) handleAdmissionResult(r watcher.AdmissionResult) {
 	}
 
 	if !s.cfg.Gateway.Watcher.Skill.TakeAction {
-		fmt.Fprintf(os.Stderr, "[sidecar] watcher: skill %s verdict=%s (take_action=false, logging only)\n",
-			r.Event.Name, r.Verdict)
+		fmt.Fprintf(os.Stderr, "[sidecar] watcher: %s %s verdict=%s (take_action=false, logging only)\n",
+			r.Event.Type, r.Event.Name, r.Verdict)
 		_ = s.logger.LogAction("sidecar-watcher-verdict", r.Event.Name,
-			fmt.Sprintf("verdict=%s (take_action disabled, no gateway action)", r.Verdict))
+			fmt.Sprintf("type=%s verdict=%s (take_action disabled, no gateway action)", r.Event.Type, r.Verdict))
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*1e9)
 	defer cancel()
 
-	if err := s.client.DisableSkill(ctx, r.Event.Name); err != nil {
-		fmt.Fprintf(os.Stderr, "[sidecar] watcher→gateway disable %s failed: %v\n",
-			r.Event.Name, err)
+	err := s.client.DisableSkill(ctx, r.Event.Name)
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[sidecar] watcher→gateway disable %s %s failed: %v\n",
+			r.Event.Type, r.Event.Name, err)
 	} else {
-		fmt.Fprintf(os.Stderr, "[sidecar] watcher→gateway disabled skill %s\n", r.Event.Name)
+		fmt.Fprintf(os.Stderr, "[sidecar] watcher→gateway disabled %s %s\n", r.Event.Type, r.Event.Name)
 		_ = s.logger.LogAction("sidecar-watcher-disable", r.Event.Name,
-			fmt.Sprintf("auto-disabled via gateway after verdict=%s", r.Verdict))
+			fmt.Sprintf("auto-disabled via gateway after verdict=%s type=%s", r.Verdict, r.Event.Type))
 	}
 }
 
 // runGuardrail starts the LiteLLM proxy child process when guardrail is enabled.
 func (s *Sidecar) runGuardrail(ctx context.Context) error {
-	llm := NewLiteLLMProcess(&s.cfg.Guardrail, s.logger, s.health, s.cfg.Gateway.APIPort)
+	llm := NewLiteLLMProcess(&s.cfg.Guardrail, s.logger, s.health, s.cfg.Gateway.APIPort, s.cfg.DataDir)
 	return llm.Run(ctx)
 }
 

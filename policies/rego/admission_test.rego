@@ -326,3 +326,70 @@ test_plugin_not_cross_matched_with_skill if {
 
 	result.verdict != "blocked"
 }
+
+# --- Production data.json integrity tests ---
+# These tests use the real data.json loaded by OPA (no `with data.actions as ...`
+# overrides) to catch regressions if someone weakens the production policy.
+
+test_production_high_rejects if {
+	result := admission with input as {
+		"target_type": "skill",
+		"target_name": "exploit-skill",
+		"path": "/tmp/exploit",
+		"block_list": [],
+		"allow_list": [],
+		"scan_result": {"max_severity": "HIGH", "total_findings": 1, "findings": [
+			{"severity": "HIGH", "title": "RCE", "scanner": "skill-scanner"},
+		]},
+	}
+
+	result.verdict == "rejected"
+	result.file_action == "quarantine"
+}
+
+test_production_critical_rejects if {
+	result := admission with input as {
+		"target_type": "mcp",
+		"target_name": "evil-mcp",
+		"path": "/tmp/evil-mcp",
+		"block_list": [],
+		"allow_list": [],
+		"scan_result": {"max_severity": "CRITICAL", "total_findings": 1, "findings": [
+			{"severity": "CRITICAL", "title": "credential exfil", "scanner": "mcp-scanner"},
+		]},
+	}
+
+	result.verdict == "rejected"
+	result.file_action == "quarantine"
+}
+
+test_production_medium_warns_not_rejects if {
+	result := admission with input as {
+		"target_type": "skill",
+		"target_name": "okish-skill",
+		"path": "/tmp/ok",
+		"block_list": [],
+		"allow_list": [],
+		"scan_result": {"max_severity": "MEDIUM", "total_findings": 1, "findings": [
+			{"severity": "MEDIUM", "title": "minor perm", "scanner": "test"},
+		]},
+	}
+
+	result.verdict == "warning"
+}
+
+test_production_policy_name_is_default if {
+	data.config.policy_name == "default"
+}
+
+test_production_update_sandbox_policy_enabled if {
+	data.config.update_sandbox_policy == true
+}
+
+test_production_max_enforcement_delay_is_two if {
+	data.config.max_enforcement_delay_seconds == 2
+}
+
+test_production_audit_retention_at_least_90 if {
+	data.audit.retention_days >= 90
+}

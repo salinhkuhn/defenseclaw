@@ -414,7 +414,7 @@ describe("PolicyEnforcer", () => {
         return body.action === "admission" && body.details?.includes('"blocked"');
       });
       expect(blockedEvent).toBeDefined();
-      expect(JSON.parse(blockedEvent!.body).severity).toBe("HIGH");
+      expect(JSON.parse(blockedEvent!.body).severity).toBe("CRITICAL");
     });
   });
 

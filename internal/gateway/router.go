@@ -319,7 +319,7 @@ func (r *EventRouter) handleApprovalRequest(evt EventFrame) {
 		_, approvalSpan = r.otel.StartApprovalSpan(context.Background(), payload.ID, rawCmd, argv, cwd)
 	}
 
-	dangerous := r.isCommandDangerous(rawCmd)
+	dangerous := r.isCommandDangerous(rawCmd) || r.isArgvDangerous(argv)
 
 	if dangerous {
 		_ = r.logger.LogAction("gateway-approval-denied", payload.ID,
@@ -434,6 +434,41 @@ func (r *EventRouter) isCommandDangerous(rawCmd string) bool {
 		}
 	}
 	return false
+}
+
+// isArgvDangerous checks the parsed argv array for dangerous patterns.
+// This catches cases where rawCommand is empty/obfuscated but argv contains
+// the actual dangerous binary or arguments.
+func (r *EventRouter) isArgvDangerous(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+
+	combined := strings.ToLower(strings.Join(argv, " "))
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(combined, pattern) {
+			return true
+		}
+	}
+
+	base := argv[0]
+	if idx := strings.LastIndex(base, "/"); idx >= 0 {
+		base = base[idx+1:]
+	}
+	base = strings.ToLower(base)
+
+	for _, bin := range dangerousBinaries {
+		if base == bin {
+			return true
+		}
+	}
+
+	return false
+}
+
+var dangerousBinaries = []string{
+	"curl", "wget", "nc", "ncat", "netcat",
+	"dd", "mkfs", "rm",
 }
 
 func truncate(s string, max int) string {

@@ -385,25 +385,43 @@ def _action_for_level(level: str) -> dict:
 
 
 def _get_active_policy_name(app: AppContext) -> str | None:
-    """Determine which policy is currently active by reading OPA data.json."""
-    rego_dir = _bundled_policies_dir()
-    data_json = os.path.join(rego_dir, "rego", "data.json")
-    if not os.path.isfile(data_json):
-        return None
-    try:
-        with open(data_json) as f:
-            data = json.load(f)
-        return data.get("config", {}).get("policy_name")
-    except (OSError, json.JSONDecodeError):
-        return None
+    """Determine which policy is currently active by reading OPA data.json.
+
+    Prefers the user policy_dir copy (where activation writes), falling
+    back to the bundled repo-local copy.
+    """
+    user_data_json = os.path.join(app.cfg.policy_dir, "rego", "data.json")
+    bundled_data_json = os.path.join(_bundled_policies_dir(), "rego", "data.json")
+
+    for data_json in (user_data_json, bundled_data_json):
+        if os.path.isfile(data_json):
+            try:
+                with open(data_json) as f:
+                    data = json.load(f)
+                return data.get("config", {}).get("policy_name")
+            except (OSError, json.JSONDecodeError):
+                continue
+    return None
 
 
 def _sync_opa_data(app: AppContext, policy_data: dict) -> None:
-    """Sync OPA data.json with the activated policy settings."""
-    rego_dir = os.path.join(_bundled_policies_dir(), "rego")
-    data_json_path = os.path.join(rego_dir, "data.json")
+    """Sync OPA data.json with the activated policy settings.
 
-    if not os.path.isfile(data_json_path):
+    Writes to the user's policy_dir (where the gateway reads from).
+    Falls back to the bundled repo-local copy as a seed source.
+    """
+    user_rego_dir = os.path.join(app.cfg.policy_dir, "rego")
+    user_data_json = os.path.join(user_rego_dir, "data.json")
+    bundled_data_json = os.path.join(_bundled_policies_dir(), "rego", "data.json")
+
+    if os.path.isfile(user_data_json):
+        data_json_path = user_data_json
+    elif os.path.isfile(bundled_data_json):
+        os.makedirs(user_rego_dir, exist_ok=True)
+        import shutil
+        shutil.copy2(bundled_data_json, user_data_json)
+        data_json_path = user_data_json
+    else:
         return
 
     try:

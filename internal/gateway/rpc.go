@@ -32,6 +32,20 @@ func (c *Client) EnableSkill(ctx context.Context, skillKey string) error {
 	return nil
 }
 
+// BlockMCPServer tells the gateway to block an MCP server by name.
+// Uses config.patch since the gateway has no native MCP management RPC.
+func (c *Client) BlockMCPServer(ctx context.Context, serverName string) error {
+	params := ConfigPatchParams{
+		Path:  "mcp.blocked." + serverName,
+		Value: true,
+	}
+	_, err := c.Request(ctx, "config.patch", params)
+	if err != nil {
+		return fmt.Errorf("gateway: block MCP server %q: %w", serverName, err)
+	}
+	return nil
+}
+
 // GetConfig fetches the current gateway configuration.
 func (c *Client) GetConfig(ctx context.Context) (json.RawMessage, error) {
 	return c.Request(ctx, "config.get", nil)

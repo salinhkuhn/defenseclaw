@@ -38,6 +38,7 @@ type Config struct {
 	Splunk        SplunkConfig       `mapstructure:"splunk"         yaml:"splunk"`
 	Gateway       GatewayConfig      `mapstructure:"gateway"        yaml:"gateway"`
 	SkillActions  SkillActionsConfig `mapstructure:"skill_actions"  yaml:"skill_actions"`
+	MCPActions    MCPActionsConfig   `mapstructure:"mcp_actions"    yaml:"mcp_actions"`
 	OTel          OTelConfig         `mapstructure:"otel"           yaml:"otel"`
 }
 
@@ -127,9 +128,25 @@ type SkillScannerConfig struct {
 	AIDefenseKey   string `mapstructure:"aidefense_api_key"  yaml:"aidefense_api_key"`
 }
 
+type MCPScannerConfig struct {
+	Binary           string `mapstructure:"binary"            yaml:"binary"`
+	Analyzers        string `mapstructure:"analyzers"         yaml:"analyzers"`
+	APIKey           string `mapstructure:"api_key"           yaml:"api_key"`
+	EndpointURL      string `mapstructure:"endpoint_url"      yaml:"endpoint_url"`
+	LLMProvider      string `mapstructure:"llm_provider"      yaml:"llm_provider"`
+	LLMAPIKey        string `mapstructure:"llm_api_key"       yaml:"llm_api_key"`
+	LLMModel         string `mapstructure:"llm_model"         yaml:"llm_model"`
+	LLMBaseURL       string `mapstructure:"llm_base_url"      yaml:"llm_base_url"`
+	LLMTimeout       int    `mapstructure:"llm_timeout"       yaml:"llm_timeout"`
+	LLMMaxRetries    int    `mapstructure:"llm_max_retries"   yaml:"llm_max_retries"`
+	ScanPrompts      bool   `mapstructure:"scan_prompts"      yaml:"scan_prompts"`
+	ScanResources    bool   `mapstructure:"scan_resources"    yaml:"scan_resources"`
+	ScanInstructions bool   `mapstructure:"scan_instructions" yaml:"scan_instructions"`
+}
+
 type ScannersConfig struct {
 	SkillScanner  SkillScannerConfig `mapstructure:"skill_scanner"  yaml:"skill_scanner"`
-	MCPScanner    string             `mapstructure:"mcp_scanner"    yaml:"mcp_scanner"`
+	MCPScanner    MCPScannerConfig   `mapstructure:"mcp_scanner"    yaml:"mcp_scanner"`
 	PluginScanner string             `mapstructure:"plugin_scanner" yaml:"plugin_scanner"`
 	AIBOM         string             `mapstructure:"aibom"           yaml:"aibom"`
 	CodeGuard     string             `mapstructure:"codeguard"       yaml:"codeguard"`
@@ -177,6 +194,8 @@ type GatewayConfig struct {
 	Host            string               `mapstructure:"host"              yaml:"host"`
 	Port            int                  `mapstructure:"port"              yaml:"port"`
 	Token           string               `mapstructure:"token"             yaml:"token"`
+	TLS             bool                 `mapstructure:"tls"               yaml:"tls"`
+	TLSSkipVerify   bool                 `mapstructure:"tls_skip_verify"   yaml:"tls_skip_verify"`
 	DeviceKeyFile   string               `mapstructure:"device_key_file"   yaml:"device_key_file"`
 	AutoApprove     bool                 `mapstructure:"auto_approve_safe" yaml:"auto_approve_safe"`
 	ReconnectMs     int                  `mapstructure:"reconnect_ms"      yaml:"reconnect_ms"`
@@ -184,6 +203,20 @@ type GatewayConfig struct {
 	ApprovalTimeout int                  `mapstructure:"approval_timeout_s" yaml:"approval_timeout_s"`
 	APIPort         int                  `mapstructure:"api_port"           yaml:"api_port"`
 	Watcher         GatewayWatcherConfig `mapstructure:"watcher"            yaml:"watcher"`
+}
+
+// RequiresTLS returns true when the gateway host is not a loopback address,
+// meaning TLS should be enforced to protect auth tokens in transit.
+func (g *GatewayConfig) RequiresTLS() bool {
+	if g.TLS {
+		return true
+	}
+	switch g.Host {
+	case "", "127.0.0.1", "localhost", "::1", "[::1]":
+		return false
+	default:
+		return true
+	}
 }
 
 type RuntimeAction string
@@ -222,6 +255,14 @@ type SkillActionsConfig struct {
 	Info     SeverityAction `mapstructure:"info"     yaml:"info"`
 }
 
+type MCPActionsConfig struct {
+	Critical SeverityAction `mapstructure:"critical" yaml:"critical"`
+	High     SeverityAction `mapstructure:"high"     yaml:"high"`
+	Medium   SeverityAction `mapstructure:"medium"   yaml:"medium"`
+	Low      SeverityAction `mapstructure:"low"      yaml:"low"`
+	Info     SeverityAction `mapstructure:"info"     yaml:"info"`
+}
+
 func Load() (*Config, error) {
 	dataDir := DefaultDataPath()
 	configFile := filepath.Join(dataDir, DefaultConfigName)
@@ -239,11 +280,23 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// Backward compat: legacy configs store mcp_scanner as a bare string.
+	if v := viper.Get("scanners.mcp_scanner"); v != nil {
+		if s, ok := v.(string); ok {
+			viper.Set("scanners.mcp_scanner", map[string]interface{}{
+				"binary": s,
+			})
+		}
+	}
+
 	var cfg Config
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("config: unmarshal: %w", err)
 	}
 	if err := cfg.SkillActions.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.MCPActions.Validate(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -286,7 +339,19 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("scanners.skill_scanner.llm_api_key", "")
 	viper.SetDefault("scanners.skill_scanner.virustotal_api_key", "")
 	viper.SetDefault("scanners.skill_scanner.aidefense_api_key", "")
-	viper.SetDefault("scanners.mcp_scanner", "mcp-scanner")
+	viper.SetDefault("scanners.mcp_scanner.binary", "mcp-scanner")
+	viper.SetDefault("scanners.mcp_scanner.analyzers", "")
+	viper.SetDefault("scanners.mcp_scanner.api_key", "")
+	viper.SetDefault("scanners.mcp_scanner.endpoint_url", "")
+	viper.SetDefault("scanners.mcp_scanner.llm_provider", "")
+	viper.SetDefault("scanners.mcp_scanner.llm_api_key", "")
+	viper.SetDefault("scanners.mcp_scanner.llm_model", "")
+	viper.SetDefault("scanners.mcp_scanner.llm_base_url", "")
+	viper.SetDefault("scanners.mcp_scanner.llm_timeout", 30)
+	viper.SetDefault("scanners.mcp_scanner.llm_max_retries", 3)
+	viper.SetDefault("scanners.mcp_scanner.scan_prompts", false)
+	viper.SetDefault("scanners.mcp_scanner.scan_resources", false)
+	viper.SetDefault("scanners.mcp_scanner.scan_instructions", false)
 	viper.SetDefault("scanners.plugin_scanner", "defenseclaw-plugin-scanner")
 	viper.SetDefault("scanners.aibom", "cisco-aibom")
 	viper.SetDefault("scanners.codeguard", filepath.Join(dataDir, "codeguard-rules"))
@@ -322,6 +387,22 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("skill_actions.info.file", string(FileActionNone))
 	viper.SetDefault("skill_actions.info.runtime", string(RuntimeEnable))
 	viper.SetDefault("skill_actions.info.install", string(InstallNone))
+
+	viper.SetDefault("mcp_actions.critical.file", string(FileActionNone))
+	viper.SetDefault("mcp_actions.critical.runtime", string(RuntimeEnable))
+	viper.SetDefault("mcp_actions.critical.install", string(InstallBlock))
+	viper.SetDefault("mcp_actions.high.file", string(FileActionNone))
+	viper.SetDefault("mcp_actions.high.runtime", string(RuntimeEnable))
+	viper.SetDefault("mcp_actions.high.install", string(InstallBlock))
+	viper.SetDefault("mcp_actions.medium.file", string(FileActionNone))
+	viper.SetDefault("mcp_actions.medium.runtime", string(RuntimeEnable))
+	viper.SetDefault("mcp_actions.medium.install", string(InstallNone))
+	viper.SetDefault("mcp_actions.low.file", string(FileActionNone))
+	viper.SetDefault("mcp_actions.low.runtime", string(RuntimeEnable))
+	viper.SetDefault("mcp_actions.low.install", string(InstallNone))
+	viper.SetDefault("mcp_actions.info.file", string(FileActionNone))
+	viper.SetDefault("mcp_actions.info.runtime", string(RuntimeEnable))
+	viper.SetDefault("mcp_actions.info.install", string(InstallNone))
 
 	viper.SetDefault("guardrail.enabled", false)
 	viper.SetDefault("guardrail.mode", "observe")

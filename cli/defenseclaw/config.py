@@ -64,6 +64,16 @@ def detect_environment() -> str:
 # ---------------------------------------------------------------------------
 
 @dataclass
+class MCPServerEntry:
+    name: str = ""
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    url: str = ""
+    transport: str = ""
+
+
+@dataclass
 class ClawConfig:
     mode: str = "openclaw"
     home_dir: str = "~/.openclaw"
@@ -90,9 +100,26 @@ class SkillScannerConfig:
 
 
 @dataclass
+class MCPScannerConfig:
+    binary: str = "mcp-scanner"
+    analyzers: str = ""
+    api_key: str = ""
+    endpoint_url: str = ""
+    llm_provider: str = ""
+    llm_api_key: str = ""
+    llm_model: str = ""
+    llm_base_url: str = ""
+    llm_timeout: int = 30
+    llm_max_retries: int = 3
+    scan_prompts: bool = False
+    scan_resources: bool = False
+    scan_instructions: bool = False
+
+
+@dataclass
 class ScannersConfig:
     skill_scanner: SkillScannerConfig = field(default_factory=SkillScannerConfig)
-    mcp_scanner: str = "mcp-scanner"
+    mcp_scanner: MCPScannerConfig = field(default_factory=MCPScannerConfig)
     aibom: str = "cisco-aibom"
     codeguard: str = ""
 
@@ -187,6 +214,30 @@ class SkillActionsConfig:
 
 
 @dataclass
+class MCPActionsConfig:
+    critical: SeverityAction = field(
+        default_factory=lambda: SeverityAction(file="none", runtime="enable", install="block"),
+    )
+    high: SeverityAction = field(
+        default_factory=lambda: SeverityAction(file="none", runtime="enable", install="block"),
+    )
+    medium: SeverityAction = field(default_factory=SeverityAction)
+    low: SeverityAction = field(default_factory=SeverityAction)
+    info: SeverityAction = field(default_factory=SeverityAction)
+
+    def for_severity(self, severity: str) -> SeverityAction:
+        return {
+            "CRITICAL": self.critical,
+            "HIGH": self.high,
+            "MEDIUM": self.medium,
+            "LOW": self.low,
+        }.get(severity.upper(), self.info)
+
+    def should_install_block(self, severity: str) -> bool:
+        return self.for_severity(severity).install == "block"
+
+
+@dataclass
 class FirewallConfig:
     config_file: str = ""
     rules_file: str = ""
@@ -234,6 +285,7 @@ class Config:
     splunk: SplunkConfig = field(default_factory=SplunkConfig)
     gateway: GatewayConfig = field(default_factory=GatewayConfig)
     skill_actions: SkillActionsConfig = field(default_factory=SkillActionsConfig)
+    mcp_actions: MCPActionsConfig = field(default_factory=MCPActionsConfig)
 
     # -- Claw-mode path resolution (mirrors claw.go) --
 
@@ -253,9 +305,17 @@ class Config:
         dirs.append(os.path.join(home, "skills"))
         return _dedup(dirs)
 
-    def mcp_dirs(self) -> list[str]:
-        home = self.claw_home_dir()
-        return [os.path.join(home, "mcp-servers"), os.path.join(home, "mcps")]
+    def mcp_servers(self) -> list[MCPServerEntry]:
+        """Return MCP servers from openclaw.json mcp.servers.
+
+        Tries ``openclaw config get mcp.servers`` first (safe, schema-
+        validated).  Falls back to reading the file directly when the CLI
+        is unavailable or returns an error (OpenClaw < 2026.3.24).
+        """
+        servers = _read_mcp_servers_via_cli()
+        if servers is not None:
+            return servers
+        return _read_mcp_servers_from_file(self.claw.config_file)
 
     def installed_skill_candidates(self, skill_name: str) -> list[str]:
         name = skill_name
@@ -283,6 +343,78 @@ def _read_openclaw_config(config_file: str) -> dict[str, Any] | None:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _read_mcp_servers_via_cli() -> list[MCPServerEntry] | None:
+    """Read mcp.servers via ``openclaw config get``.  Returns None on failure."""
+    try:
+        result = subprocess.run(
+            ["openclaw", "config", "get", "mcp.servers"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        return _parse_mcp_servers_json(result.stdout)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+
+def _read_mcp_servers_from_file(config_file: str) -> list[MCPServerEntry]:
+    """Fallback: parse mcp.servers directly from openclaw.json."""
+    path = _expand(config_file)
+    try:
+        with open(path) as f:
+            raw = f.read()
+    except OSError:
+        return []
+
+    data: dict[str, Any] | None = None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            import json5  # type: ignore[import-untyped]
+            data = json5.loads(raw)
+        except Exception:
+            return []
+
+    if not isinstance(data, dict):
+        return []
+
+    servers = data.get("mcp", {}).get("servers")
+    if not isinstance(servers, dict):
+        return []
+
+    return _parse_mcp_servers_dict(servers)
+
+
+def _parse_mcp_servers_json(text: str) -> list[MCPServerEntry]:
+    text = text.strip()
+    if not text:
+        return []
+    try:
+        servers = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(servers, dict):
+        return []
+    return _parse_mcp_servers_dict(servers)
+
+
+def _parse_mcp_servers_dict(servers: dict[str, Any]) -> list[MCPServerEntry]:
+    entries: list[MCPServerEntry] = []
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            continue
+        entries.append(MCPServerEntry(
+            name=name,
+            command=cfg.get("command", ""),
+            args=cfg.get("args", []),
+            env=cfg.get("env", {}),
+            url=cfg.get("url", ""),
+            transport=cfg.get("transport", ""),
+        ))
+    return entries
 
 
 def _dedup(paths: list[str]) -> list[str]:
@@ -324,6 +456,19 @@ def _merge_skill_actions(raw: dict[str, Any] | None) -> SkillActionsConfig:
     )
 
 
+def _merge_mcp_actions(raw: dict[str, Any] | None) -> MCPActionsConfig:
+    defaults = MCPActionsConfig()
+    if not raw:
+        return defaults
+    return MCPActionsConfig(
+        critical=_merge_severity_action(raw.get("critical")) if "critical" in raw else defaults.critical,
+        high=_merge_severity_action(raw.get("high")) if "high" in raw else defaults.high,
+        medium=_merge_severity_action(raw.get("medium")) if "medium" in raw else defaults.medium,
+        low=_merge_severity_action(raw.get("low")) if "low" in raw else defaults.low,
+        info=_merge_severity_action(raw.get("info")) if "info" in raw else defaults.info,
+    )
+
+
 def _merge_cisco_ai_defense(raw: dict[str, Any] | None) -> CiscoAIDefenseConfig:
     if not raw:
         return CiscoAIDefenseConfig()
@@ -355,6 +500,31 @@ def _merge_guardrail(raw: dict[str, Any] | None, data_dir: str) -> GuardrailConf
         block_message=raw.get("block_message", ""),
         cisco_ai_defense=_merge_cisco_ai_defense(raw.get("cisco_ai_defense")),
     )
+
+
+def _merge_mcp_scanner(raw: Any) -> MCPScannerConfig:
+    """Parse mcp_scanner config with backward compat for bare-string values."""
+    if raw is None:
+        return MCPScannerConfig()
+    if isinstance(raw, str):
+        return MCPScannerConfig(binary=raw)
+    if isinstance(raw, dict):
+        return MCPScannerConfig(
+            binary=raw.get("binary", "mcp-scanner"),
+            analyzers=raw.get("analyzers", ""),
+            api_key=raw.get("api_key", ""),
+            endpoint_url=raw.get("endpoint_url", ""),
+            llm_provider=raw.get("llm_provider", ""),
+            llm_api_key=raw.get("llm_api_key", ""),
+            llm_model=raw.get("llm_model", ""),
+            llm_base_url=raw.get("llm_base_url", ""),
+            llm_timeout=raw.get("llm_timeout", 30),
+            llm_max_retries=raw.get("llm_max_retries", 3),
+            scan_prompts=raw.get("scan_prompts", False),
+            scan_resources=raw.get("scan_resources", False),
+            scan_instructions=raw.get("scan_instructions", False),
+        )
+    return MCPScannerConfig()
 
 
 def _merge_gateway_watcher(raw: dict[str, Any] | None) -> GatewayWatcherConfig:
@@ -418,7 +588,7 @@ def load() -> Config:
                 virustotal_api_key=ss_raw.get("virustotal_api_key", ""),
                 aidefense_api_key=ss_raw.get("aidefense_api_key", ""),
             ),
-            mcp_scanner=scanners_raw.get("mcp_scanner", "mcp-scanner"),
+            mcp_scanner=_merge_mcp_scanner(scanners_raw.get("mcp_scanner")),
             aibom=scanners_raw.get("aibom", "cisco-aibom"),
             codeguard=scanners_raw.get("codeguard", os.path.join(data_dir, "codeguard-rules")),
         ),
@@ -460,6 +630,7 @@ def load() -> Config:
             watcher=_merge_gateway_watcher(gw_raw.get("watcher")),
         ),
         skill_actions=_merge_skill_actions(raw.get("skill_actions")),
+        mcp_actions=_merge_mcp_actions(raw.get("mcp_actions")),
     )
 
 

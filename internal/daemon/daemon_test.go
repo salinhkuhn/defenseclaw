@@ -253,6 +253,53 @@ func TestVerifyProcessDarwinRejectsBadPID(t *testing.T) {
 	}
 }
 
+func TestWritePIDInfoUsesRestrictedPerms(t *testing.T) {
+	dir := t.TempDir()
+	d := New(dir)
+	_ = d.writePIDInfo(99999, "/usr/bin/test")
+
+	info, err := os.Stat(d.pidFile)
+	if err != nil {
+		t.Fatalf("stat pidFile: %v", err)
+	}
+	mode := info.Mode().Perm()
+	if mode != 0600 {
+		t.Errorf("pidFile perms = %04o, want 0600", mode)
+	}
+}
+
+func TestDataDirAndLogFilePerms(t *testing.T) {
+	base := t.TempDir()
+	dataDir := filepath.Join(base, "nested", "data")
+	d := New(dataDir)
+
+	if err := os.MkdirAll(d.dataDir, 0700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	info, err := os.Stat(d.dataDir)
+	if err != nil {
+		t.Fatalf("stat dataDir: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0700 {
+		t.Errorf("dataDir perms = %04o, want 0700", perm)
+	}
+
+	logPath := d.LogFile()
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatalf("create logFile: %v", err)
+	}
+	f.Close()
+
+	logInfo, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("stat logFile: %v", err)
+	}
+	if perm := logInfo.Mode().Perm(); perm != 0600 {
+		t.Errorf("logFile perms = %04o, want 0600", perm)
+	}
+}
+
 func TestStopReturnsErrNotRunningOnMissingPID(t *testing.T) {
 	dir := t.TempDir()
 	d := New(dir)

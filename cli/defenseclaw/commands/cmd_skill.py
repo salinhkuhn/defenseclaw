@@ -18,7 +18,68 @@ from defenseclaw.context import AppContext, pass_ctx
 
 @click.group()
 def skill() -> None:
-    """Manage OpenClaw skills — install, scan, block, allow, disable, enable, quarantine, restore."""
+    """Manage OpenClaw skills — search, install, scan, block, allow, disable, enable, quarantine, restore."""
+
+
+# ---------------------------------------------------------------------------
+# skill search
+# ---------------------------------------------------------------------------
+
+@skill.command()
+@click.argument("query")
+@click.option("--json", "as_json", is_flag=True, help="Output results as JSON")
+@pass_ctx
+def search(app: AppContext, query: str, as_json: bool) -> None:
+    """Search the ClawHub skill registry.
+
+    Delegates to ``npx clawhub search <query>`` and displays results.
+
+    \b
+    Examples:
+      defenseclaw skill search wiki
+      defenseclaw skill search database --json
+    """
+    try:
+        result = subprocess.run(
+            ["npx", "clawhub", "search", query],
+            capture_output=True, text=True, timeout=30,
+        )
+    except FileNotFoundError:
+        click.echo("error: npx not found — install Node.js to use clawhub search", err=True)
+        raise SystemExit(1)
+    except subprocess.TimeoutExpired:
+        click.echo("error: clawhub search timed out", err=True)
+        raise SystemExit(1)
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        click.echo(f"error: clawhub search failed: {stderr or 'unknown error'}", err=True)
+        raise SystemExit(1)
+
+    output = result.stdout.strip()
+    if not output:
+        click.echo(f"No skills found matching {query!r}")
+        return
+
+    if as_json:
+        rows = []
+        for line in output.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) >= 2:
+                name = parts[0]
+                score = ""
+                description = parts[1] if len(parts) >= 2 else ""
+                if description.startswith("(") and description.endswith(")"):
+                    score = description
+                    description = ""
+                elif len(parts) >= 3:
+                    description = parts[1]
+                    score = parts[2] if len(parts) >= 3 else ""
+                rows.append({"name": name, "description": description, "score": score.strip("()")})
+        click.echo(json.dumps(rows, indent=2))
+        return
+
+    click.echo(output)
 
 
 # ---------------------------------------------------------------------------
@@ -109,11 +170,12 @@ def _build_scan_map(store) -> dict[str, dict[str, Any]]:
         return scan_map
     for ls in latest:
         name = os.path.basename(ls["target"])
+        finding_count = ls["finding_count"]
         scan_map[name] = {
             "target": ls["target"],
-            "clean": ls["finding_count"] == 0,
-            "max_severity": ls["max_severity"] or "INFO",
-            "total_findings": ls["finding_count"],
+            "clean": finding_count == 0,
+            "max_severity": ls["max_severity"] if finding_count > 0 else "CLEAN",
+            "total_findings": finding_count,
         }
     return scan_map
 
@@ -147,13 +209,23 @@ def _skill_status(s: dict[str, Any]) -> str:
     return "inactive"
 
 
-def _skill_status_display(s: dict[str, Any]) -> str:
+def _skill_status_display(s: dict[str, Any], action_entry: Any = None) -> str:
     if s.get("disabled"):
         return "✗ disabled"
     if s.get("blockedByAllowlist"):
         return "✗ blocked"
+    if action_entry and not action_entry.actions.is_empty():
+        a = action_entry.actions
+        if a.file == "quarantine":
+            return "✗ quarantined"
+        if a.install == "block":
+            return "✗ blocked"
+        if a.runtime == "disable":
+            return "✗ disabled"
     if s.get("eligible"):
         return "✓ ready"
+    if s.get("source") in ("enforcement", "scan-history"):
+        return "✗ removed"
     return "✗ missing"
 
 
@@ -169,14 +241,14 @@ def list_skills(app: AppContext, as_json: bool) -> None:
     scan_map = _build_scan_map(app.store)
     actions_map = _build_actions_map(app.store)
 
-    # If no openclaw skills found, fall back to actions-only view
-    if not skills:
-        if not actions_map:
-            click.echo("No skills found. Is openclaw installed?")
-            click.echo("  Showing enforcement-only data from the audit database.")
-            return
-        # Build synthetic skill list from actions
-        for name, ae in actions_map.items():
+    if not skills and not actions_map and not scan_map:
+        click.echo("No skills found. Is openclaw installed?")
+        return
+
+    known_names = {s.get("name", "") for s in skills}
+
+    for name, ae in actions_map.items():
+        if name not in known_names:
             skills.append({
                 "name": name,
                 "description": "",
@@ -184,10 +256,26 @@ def list_skills(app: AppContext, as_json: bool) -> None:
                 "eligible": False,
                 "disabled": ae.actions.runtime == "disable",
                 "blockedByAllowlist": False,
-                "source": "actions-db",
+                "source": "enforcement",
                 "bundled": False,
                 "homepage": "",
             })
+            known_names.add(name)
+
+    for name in scan_map:
+        if name not in known_names:
+            skills.append({
+                "name": name,
+                "description": "",
+                "emoji": "",
+                "eligible": False,
+                "disabled": False,
+                "blockedByAllowlist": False,
+                "source": "scan-history",
+                "bundled": False,
+                "homepage": "",
+            })
+            known_names.add(name)
 
     if as_json:
         _print_skill_list_json(skills, scan_map, actions_map)
@@ -251,7 +339,7 @@ def _print_skill_list_table(
         name = s.get("name", "")
         emoji = s.get("emoji", "")
         display_name = f"{emoji} {name}" if emoji else name
-        status_display = _skill_status_display(s)
+        status_display = _skill_status_display(s, actions_map.get(name))
         desc = s.get("description", "")
         source = s.get("source", "")
 
@@ -264,6 +352,7 @@ def _print_skill_list_table(
                 "HIGH": "red",
                 "MEDIUM": "yellow",
                 "LOW": "cyan",
+                "CLEAN": "green",
             }.get(severity, "")
 
         actions_str = "-"
@@ -271,9 +360,9 @@ def _print_skill_list_table(
             actions_str = actions_map[name].actions.summary()
 
         status_style = ""
-        if "disabled" in status_display or "blocked" in status_display or "missing" in status_display:
+        if "✗" in status_display:
             status_style = "red"
-        elif "ready" in status_display:
+        elif "✓" in status_display:
             status_style = "green"
 
         table.add_row(

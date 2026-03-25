@@ -1,10 +1,10 @@
 {
   "config": {
-    "policy_name": "strict",
-    "allow_list_bypass_scan": false,
+    "policy_name": "default",
+    "allow_list_bypass_scan": true,
     "scan_on_install": true,
     "update_sandbox_policy": true,
-    "max_enforcement_delay_seconds": 1
+    "max_enforcement_delay_seconds": 2
   },
   "actions": {
     "CRITICAL": {
@@ -16,8 +16,8 @@
       "file": "quarantine"
     },
     "MEDIUM": {
-      "runtime": "block",
-      "file": "quarantine"
+      "runtime": "allow",
+      "file": "none"
     },
     "LOW": {
       "runtime": "allow",
@@ -36,7 +36,7 @@
     "INFO": 1
   },
   "audit": {
-    "retention_days": 365,
+    "retention_days": 90,
     "log_all_actions": true,
     "log_scan_results": true
   },

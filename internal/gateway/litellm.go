@@ -25,10 +25,15 @@ type LiteLLMProcess struct {
 	logger  *audit.Logger
 	health  *SidecarHealth
 	apiPort int
+	dataDir string
 }
 
-func NewLiteLLMProcess(cfg *config.GuardrailConfig, logger *audit.Logger, health *SidecarHealth, apiPort int) *LiteLLMProcess {
-	return &LiteLLMProcess{cfg: cfg, logger: logger, health: health, apiPort: apiPort}
+func NewLiteLLMProcess(cfg *config.GuardrailConfig, logger *audit.Logger, health *SidecarHealth, apiPort int, dataDir ...string) *LiteLLMProcess {
+	p := &LiteLLMProcess{cfg: cfg, logger: logger, health: health, apiPort: apiPort}
+	if len(dataDir) > 0 {
+		p.dataDir = dataDir[0]
+	}
+	return p
 }
 
 // Run starts the LiteLLM proxy and keeps it running until ctx is cancelled.
@@ -169,6 +174,7 @@ func (l *LiteLLMProcess) buildEnv() []string {
 		"DEFENSECLAW_GUARDRAIL_MODE":  true,
 		"DEFENSECLAW_SCANNER_MODE":    true,
 		"DEFENSECLAW_API_PORT":        true,
+		"DEFENSECLAW_DATA_DIR":        true,
 	}
 	filtered := make([]string, 0, len(env)+6)
 	for _, e := range env {
@@ -184,6 +190,9 @@ func (l *LiteLLMProcess) buildEnv() []string {
 	}
 	if l.apiPort > 0 {
 		filtered = append(filtered, fmt.Sprintf("DEFENSECLAW_API_PORT=%d", l.apiPort))
+	}
+	if l.dataDir != "" {
+		filtered = append(filtered, "DEFENSECLAW_DATA_DIR="+l.dataDir)
 	}
 
 	if l.cfg.ScannerMode == "remote" || l.cfg.ScannerMode == "both" {
@@ -204,12 +213,37 @@ func (l *LiteLLMProcess) buildEnv() []string {
 	return filtered
 }
 
+// sensitiveJSONKeys are quoted JSON field names that carry user/assistant
+// message payloads. We match these rather than bare substrings to avoid
+// false-positive redaction of operational log fields like content-type,
+// content-length, prompt_tokens, and completion_tokens.
+var sensitiveJSONKeys = []string{
+	`"content"`,
+	`"messages"`,
+	`"message"`,
+	`"prompt"`,
+}
+
+func containsSensitivePayload(line string) bool {
+	lower := strings.ToLower(line)
+	for _, key := range sensitiveJSONKeys {
+		if strings.Contains(lower, key) {
+			return true
+		}
+	}
+	return false
+}
+
 func (l *LiteLLMProcess) streamLog(prefix string, r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 256*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		fmt.Fprintf(os.Stderr, "[%s] %s\n", prefix, line)
+		if containsSensitivePayload(line) {
+			fmt.Fprintf(os.Stderr, "[%s] (redacted: %d chars)\n", prefix, len(line))
+		} else {
+			fmt.Fprintf(os.Stderr, "[%s] %s\n", prefix, line)
+		}
 	}
 }
 

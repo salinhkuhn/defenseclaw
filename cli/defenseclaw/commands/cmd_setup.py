@@ -223,6 +223,167 @@ def _print_summary(sc) -> None:
 
 
 # ---------------------------------------------------------------------------
+# setup mcp-scanner
+# ---------------------------------------------------------------------------
+
+@setup.command("mcp-scanner")
+@click.option("--analyzers", default=None, help="Comma-separated analyzer list (yara,api,llm,behavioral,readiness)")
+@click.option("--endpoint-url", default=None, help="MCP scanner API endpoint URL")
+@click.option("--llm-provider", default=None, help="LLM provider (anthropic or openai)")
+@click.option("--llm-model", default=None, help="LLM model for semantic analysis")
+@click.option("--llm-base-url", default=None, help="LLM API base URL (overrides provider default)")
+@click.option("--llm-timeout", type=int, default=None, help="LLM request timeout (seconds)")
+@click.option("--llm-max-retries", type=int, default=None, help="LLM max retries")
+@click.option("--scan-prompts", is_flag=True, default=None, help="Scan MCP prompts")
+@click.option("--scan-resources", is_flag=True, default=None, help="Scan MCP resources")
+@click.option("--scan-instructions", is_flag=True, default=None, help="Scan server instructions")
+@click.option("--non-interactive", is_flag=True, help="Use flags instead of prompts")
+@pass_ctx
+def setup_mcp_scanner(
+    app: AppContext,
+    analyzers, endpoint_url,
+    llm_provider, llm_model, llm_base_url, llm_timeout, llm_max_retries,
+    scan_prompts, scan_resources, scan_instructions,
+    non_interactive,
+) -> None:
+    """Configure mcp-scanner analyzers and API keys.
+
+    Interactively configure how mcp-scanner runs. MCP servers are managed
+    via ``defenseclaw mcp set/unset`` rather than directory watching.
+
+    API keys are stored in ~/.defenseclaw/config.yaml (not environment
+    variables). Use --non-interactive with flags for CI/scripted configuration.
+    """
+    mc = app.cfg.scanners.mcp_scanner
+
+    if non_interactive:
+        if analyzers is not None:
+            mc.analyzers = analyzers
+        if endpoint_url is not None:
+            mc.endpoint_url = endpoint_url
+        if llm_provider is not None:
+            mc.llm_provider = llm_provider
+        if llm_model is not None:
+            mc.llm_model = llm_model
+        if llm_base_url is not None:
+            mc.llm_base_url = llm_base_url
+        if llm_timeout is not None:
+            mc.llm_timeout = llm_timeout
+        if llm_max_retries is not None:
+            mc.llm_max_retries = llm_max_retries
+        if scan_prompts is not None:
+            mc.scan_prompts = scan_prompts
+        if scan_resources is not None:
+            mc.scan_resources = scan_resources
+        if scan_instructions is not None:
+            mc.scan_instructions = scan_instructions
+    else:
+        _interactive_mcp_setup(mc, app.cfg)
+
+    app.cfg.save()
+    _print_mcp_summary(mc)
+
+    if app.logger:
+        parts = [f"analyzers={mc.analyzers or 'default'}"]
+        if mc.llm_provider:
+            parts.append(f"llm_provider={mc.llm_provider}")
+        if mc.llm_model:
+            parts.append(f"llm_model={mc.llm_model}")
+        parts.append("mcp_managed_via=openclaw_config")
+        app.logger.log_action("setup-mcp-scanner", "config", " ".join(parts))
+
+
+def _interactive_mcp_setup(mc, cfg) -> None:
+    click.echo()
+    click.echo("  MCP Scanner Configuration")
+    click.echo("  ──────────────────────────")
+    click.echo(f"  Binary: {mc.binary}")
+    click.echo()
+
+    # 1. Base analyzers
+    mc.analyzers = click.prompt(
+        "  Analyzers (comma-separated, e.g. yara,behavioral,readiness)",
+        default=mc.analyzers or "yara",
+    )
+
+    # 2. LLM analyzer
+    use_llm = click.confirm("  Enable LLM analyzer?", default=bool(mc.llm_model))
+    if use_llm:
+        mc.llm_provider = click.prompt(
+            "  LLM provider (anthropic/openai)",
+            default=mc.llm_provider or "anthropic",
+        )
+        mc.llm_model = click.prompt("  LLM model name", default=mc.llm_model or "")
+        mc.llm_api_key = _prompt_secret("MCP_SCANNER_LLM_API_KEY", mc.llm_api_key)
+        mc.llm_base_url = click.prompt(
+            "  LLM base URL (leave blank to use provider default)",
+            default=mc.llm_base_url or "", show_default=False,
+        )
+        mc.llm_timeout = click.prompt("  LLM timeout (seconds)", type=int, default=mc.llm_timeout)
+        mc.llm_max_retries = click.prompt("  LLM max retries", type=int, default=mc.llm_max_retries)
+        if "llm" not in mc.analyzers:
+            mc.analyzers = f"{mc.analyzers},llm" if mc.analyzers else "llm"
+    else:
+        mc.llm_provider = ""
+        mc.llm_model = ""
+        mc.llm_api_key = ""
+
+    # 3. API analyzer (Cisco AI Defense)
+    click.echo()
+    use_api = click.confirm("  Enable API analyzer (Cisco AI Defense)?", default=False)
+    if use_api:
+        _default_endpoint = "https://us.api.inspect.aidefense.security.cisco.com"
+        mc.endpoint_url = click.prompt(
+            "  Cisco AI Defense endpoint URL",
+            default=mc.endpoint_url or _default_endpoint,
+        )
+        mc.api_key = _prompt_secret("CISCO_AI_DEFENSE_API_KEY", mc.api_key)
+        if "api" not in mc.analyzers:
+            mc.analyzers = f"{mc.analyzers},api" if mc.analyzers else "api"
+
+    # 4. Scan options
+    click.echo()
+    mc.scan_prompts = click.confirm("  Scan MCP prompts?", default=mc.scan_prompts)
+    mc.scan_resources = click.confirm("  Scan MCP resources?", default=mc.scan_resources)
+    mc.scan_instructions = click.confirm("  Scan server instructions?", default=mc.scan_instructions)
+
+
+
+def _print_mcp_summary(mc) -> None:
+    click.echo()
+    click.echo("  Saved to ~/.defenseclaw/config.yaml")
+    click.echo()
+
+    rows: list[tuple[str, str]] = [
+        ("analyzers", mc.analyzers or "(all)"),
+    ]
+    if mc.llm_provider:
+        rows.append(("llm_provider", mc.llm_provider))
+    if mc.llm_model:
+        rows.append(("llm_model", mc.llm_model))
+        if mc.llm_base_url:
+            rows.append(("llm_base_url", mc.llm_base_url))
+        if mc.llm_api_key:
+            rows.append(("llm_api_key", _mask(mc.llm_api_key)))
+        rows.append(("llm_timeout", str(mc.llm_timeout)))
+        rows.append(("llm_max_retries", str(mc.llm_max_retries)))
+    if mc.endpoint_url:
+        rows.append(("endpoint_url", mc.endpoint_url))
+    if mc.api_key:
+        rows.append(("api_key", _mask(mc.api_key)))
+    if mc.scan_prompts:
+        rows.append(("scan_prompts", "true"))
+    if mc.scan_resources:
+        rows.append(("scan_resources", "true"))
+    if mc.scan_instructions:
+        rows.append(("scan_instructions", "true"))
+
+    for key, val in rows:
+        click.echo(f"    scanners.mcp_scanner.{key + ':':<22s} {val}")
+    click.echo()
+
+
+# ---------------------------------------------------------------------------
 # setup gateway
 # ---------------------------------------------------------------------------
 

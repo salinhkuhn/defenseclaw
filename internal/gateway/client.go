@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -56,8 +57,12 @@ func NewClient(cfg *config.GatewayConfig) (*Client, error) {
 }
 
 func (c *Client) wsURL() string {
+	scheme := "ws"
+	if c.cfg.RequiresTLS() {
+		scheme = "wss"
+	}
 	u := url.URL{
-		Scheme: "ws",
+		Scheme: scheme,
 		Host:   fmt.Sprintf("%s:%d", c.cfg.Host, c.cfg.Port),
 	}
 	return u.String()
@@ -72,6 +77,12 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
+	}
+	if c.cfg.RequiresTLS() {
+		dialer.TLSClientConfig = &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: c.cfg.TLSSkipVerify,
+		}
 	}
 	conn, resp, err := dialer.DialContext(ctx, target, nil)
 	if err != nil {

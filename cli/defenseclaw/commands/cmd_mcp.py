@@ -1,43 +1,233 @@
-"""defenseclaw mcp — Manage MCP servers (scan, block, allow, list).
+"""defenseclaw mcp — Manage MCP servers (scan, block, allow, list, set, unset).
 
-Stub implementation — consolidates MCP ops that were previously
-scattered across scan.go, block.go, allow.go in the Go CLI.
+Reads MCP server configuration from OpenClaw's ``mcp.servers`` key in
+``~/.openclaw/openclaw.json``.  Writes go through the ``openclaw config``
+CLI so OpenClaw validates the schema and hot-reloads cleanly.
 """
 
 from __future__ import annotations
 
+import json
+import subprocess
+
 import click
 
+from defenseclaw.config import MCPServerEntry
 from defenseclaw.context import AppContext, pass_ctx
+from defenseclaw.models import ScanResult
+
+
+def _parse_args(raw: str) -> list[str]:
+    """Parse ``--args`` value as a JSON array or comma-separated string."""
+    stripped = raw.strip()
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return [str(a) for a in parsed]
+        except json.JSONDecodeError:
+            pass
+    return [a.strip() for a in raw.split(",") if a.strip()]
 
 
 @click.group()
 def mcp() -> None:
-    """Manage MCP servers — scan, block, allow, list."""
+    """Manage MCP servers — scan, block, allow, list, set, unset."""
 
 
-@mcp.command()
-@click.argument("url")
-@click.option("--json", "as_json", is_flag=True, help="Output results as JSON")
+# ---------------------------------------------------------------------------
+# list
+# ---------------------------------------------------------------------------
+
+@mcp.command("list")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 @pass_ctx
-def scan(app: AppContext, url: str, as_json: bool) -> None:
-    """Scan an MCP server endpoint."""
+def list_mcps(app: AppContext, as_json: bool) -> None:
+    """List MCP servers configured in OpenClaw."""
+    from rich.console import Console
+    from rich.table import Table
+
+    servers = app.cfg.mcp_servers()
+    scan_map = _build_mcp_scan_map(app.store, servers)
+    actions_map = _build_mcp_actions_map(app.store)
+
+    if as_json:
+        out = []
+        for s in servers:
+            entry: dict = {"name": s.name, "transport": s.transport or "stdio"}
+            if s.command:
+                entry["command"] = s.command
+            if s.args:
+                entry["args"] = s.args
+            if s.url:
+                entry["url"] = s.url
+            if s.name in scan_map:
+                entry["severity"] = scan_map[s.name]["max_severity"]
+            if s.name in actions_map:
+                ae = actions_map[s.name]
+                if not ae.actions.is_empty():
+                    entry["actions"] = ae.actions.to_dict()
+            out.append(entry)
+        click.echo(json.dumps(out, indent=2))
+        return
+
+    if not servers:
+        click.echo("No MCP servers configured in openclaw.json (mcp.servers).")
+        return
+
+    console = Console()
+    table = Table(title="MCP Servers (from openclaw.json)")
+    table.add_column("Name", style="bold")
+    table.add_column("Transport")
+    table.add_column("Command")
+    table.add_column("URL")
+    table.add_column("Severity")
+    table.add_column("Actions")
+
+    for s in servers:
+        severity = "-"
+        sev_style = ""
+        if s.name in scan_map:
+            severity = scan_map[s.name]["max_severity"]
+            sev_style = {
+                "CRITICAL": "bold red",
+                "HIGH": "red",
+                "MEDIUM": "yellow",
+                "LOW": "cyan",
+                "CLEAN": "green",
+            }.get(severity, "")
+
+        actions_str = "-"
+        if s.name in actions_map:
+            actions_str = actions_map[s.name].actions.summary()
+
+        table.add_row(
+            s.name,
+            s.transport or "stdio",
+            s.command or "",
+            s.url or "",
+            f"[{sev_style}]{severity}[/{sev_style}]" if sev_style else severity,
+            actions_str,
+        )
+
+    console.print(table)
+
+
+def _build_mcp_scan_map(store, servers: list[MCPServerEntry]) -> dict[str, dict]:
+    """Build a map of server-name -> latest scan from the DB."""
+    scan_map: dict[str, dict] = {}
+    if store is None:
+        return scan_map
+    try:
+        latest = store.latest_scans_by_scanner("mcp-scanner")
+    except Exception:
+        return scan_map
+
+    url_to_name: dict[str, str] = {}
+    for s in servers:
+        if s.url:
+            url_to_name[s.url] = s.name
+
+    for ls in latest:
+        target = ls["target"]
+        if target in url_to_name:
+            name = url_to_name[target]
+        elif "/" not in target:
+            name = target
+        else:
+            continue
+        finding_count = ls["finding_count"]
+        scan_map[name] = {
+            "target": target,
+            "clean": finding_count == 0,
+            "max_severity": ls["max_severity"] if finding_count > 0 else "CLEAN",
+            "total_findings": finding_count,
+        }
+    return scan_map
+
+
+def _build_mcp_actions_map(store) -> dict:
+    """Build a map of server-name -> ActionEntry from the DB."""
+    actions_map: dict = {}
+    if store is None:
+        return actions_map
+    try:
+        entries = store.list_actions_by_type("mcp")
+    except Exception:
+        return actions_map
+    for e in entries:
+        actions_map[e.target_name] = e
+    return actions_map
+
+
+# ---------------------------------------------------------------------------
+# scan
+# ---------------------------------------------------------------------------
+
+def _resolve_scan_target(app: AppContext, target: str) -> tuple[str, MCPServerEntry | None]:
+    """Resolve *target* to a scannable URL/spec and optional server entry.
+
+    If *target* contains ``://`` it is treated as a URL and returned as-is.
+    Otherwise it is looked up in ``mcp.servers`` from openclaw.json.
+    Returns (scan_target, server_entry) — server_entry is set for local
+    stdio servers so the scanner can spawn them.
+    """
+    if "://" in target:
+        return target, None
+
+    servers = app.cfg.mcp_servers()
+    by_name = {s.name: s for s in servers}
+    server = by_name.get(target)
+    if server is None:
+        names = sorted(by_name.keys())
+        hint = f"  Available: {', '.join(names)}" if names else "  No MCP servers configured."
+        raise click.ClickException(f"MCP server {target!r} not found in openclaw.json.\n{hint}")
+
+    if server.url:
+        return server.url, server
+    if server.command:
+        return target, server
+    raise click.ClickException(
+        f"MCP server {target!r} has neither url nor command — cannot scan.",
+    )
+
+
+def _run_scan(app: AppContext, target: str, analyzers: str,
+              scan_prompts: bool, scan_resources: bool,
+              scan_instructions: bool,
+              server_entry: MCPServerEntry | None = None) -> ScanResult | None:
+    """Run the MCP scanner on *target*.  Returns None on fatal error."""
+    from dataclasses import replace
+
     from defenseclaw.scanner.mcp import MCPScannerWrapper
 
-    scanner = MCPScannerWrapper(app.cfg.scanners.mcp_scanner)
-    click.echo(f"Scanning MCP server: {url}")
+    scan_cfg = app.cfg.scanners.mcp_scanner
+    if analyzers:
+        scan_cfg = replace(scan_cfg, analyzers=analyzers)
+    if scan_prompts:
+        scan_cfg = replace(scan_cfg, scan_prompts=True)
+    if scan_resources:
+        scan_cfg = replace(scan_cfg, scan_resources=True)
+    if scan_instructions:
+        scan_cfg = replace(scan_cfg, scan_instructions=True)
+
+    scanner = MCPScannerWrapper(scan_cfg)
+    click.echo(f"Scanning MCP server: {target}")
 
     try:
-        result = scanner.scan(url)
+        result = scanner.scan(target, server_entry=server_entry)
     except SystemExit:
         raise
     except Exception as exc:
         click.echo(f"error: scan failed: {exc}", err=True)
-        raise SystemExit(1)
+        return None
 
     if app.logger:
         app.logger.log_scan(result)
+    return result
 
+
+def _print_scan_result(result: ScanResult, as_json: bool) -> None:
     if as_json:
         click.echo(result.to_json())
     elif result.is_clean():
@@ -52,74 +242,255 @@ def scan(app: AppContext, url: str, as_json: bool) -> None:
 
 
 @mcp.command()
-@click.argument("url")
+@click.argument("target")
+@click.option("--json", "as_json", is_flag=True, help="Output results as JSON")
+@click.option("--analyzers", default="", help="Comma-separated analyzer list")
+@click.option("--scan-prompts", is_flag=True, help="Also scan MCP prompts")
+@click.option("--scan-resources", is_flag=True, help="Also scan MCP resources")
+@click.option("--scan-instructions", is_flag=True, help="Also scan server instructions")
+@click.option("--all", "scan_all", is_flag=True, help="Scan every server in openclaw.json")
+@pass_ctx
+def scan(
+    app: AppContext,
+    target: str,
+    as_json: bool,
+    analyzers: str,
+    scan_prompts: bool,
+    scan_resources: bool,
+    scan_instructions: bool,
+    scan_all: bool,
+) -> None:
+    """Scan an MCP server by name or URL.
+
+    TARGET can be a server name from openclaw.json or a direct URL.
+    Use --all to scan every configured server.
+    """
+    from defenseclaw.enforce import PolicyEngine
+
+    if scan_all:
+        servers = app.cfg.mcp_servers()
+        if not servers:
+            click.echo("No MCP servers configured in openclaw.json.")
+            return
+        for s in servers:
+            scan_target = s.url or s.name
+            click.echo(f"\n{'─' * 40}")
+            result = _run_scan(app, scan_target, analyzers,
+                               scan_prompts, scan_resources, scan_instructions,
+                               server_entry=s)
+            if result:
+                _print_scan_result(result, as_json)
+        return
+
+    pe = PolicyEngine(app.store)
+    resolved, entry = _resolve_scan_target(app, target)
+
+    if pe.is_blocked("mcp", target):
+        click.echo(f"BLOCKED: {target} — remove from block list first")
+        return
+
+    result = _run_scan(app, resolved, analyzers,
+                       scan_prompts, scan_resources, scan_instructions,
+                       server_entry=entry)
+    if result:
+        _print_scan_result(result, as_json)
+    else:
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# block / allow  (unchanged semantics, accept name or url)
+# ---------------------------------------------------------------------------
+
+@mcp.command()
+@click.argument("target")
 @click.option("--reason", default="", help="Reason for blocking")
 @pass_ctx
-def block(app: AppContext, url: str, reason: str) -> None:
-    """Block an MCP server endpoint."""
+def block(app: AppContext, target: str, reason: str) -> None:
+    """Block an MCP server (by name or URL)."""
     from defenseclaw.enforce import PolicyEngine
 
     pe = PolicyEngine(app.store)
-    if pe.is_blocked("mcp", url):
-        click.echo(f"Already blocked: {url}")
+    if pe.is_blocked("mcp", target):
+        click.echo(f"Already blocked: {target}")
         return
-    pe.block("mcp", url, reason or "manually blocked via CLI")
-    click.secho(f"Blocked: {url}", fg="red")
+    pe.block("mcp", target, reason or "manually blocked via CLI")
+    click.secho(f"Blocked: {target}", fg="red")
 
     if app.logger:
-        app.logger.log_action("block-mcp", url, f"reason={reason}")
+        app.logger.log_action("block-mcp", target, f"reason={reason}")
 
 
 @mcp.command()
-@click.argument("url")
+@click.argument("target")
 @click.option("--reason", default="", help="Reason for allowing")
 @pass_ctx
-def allow(app: AppContext, url: str, reason: str) -> None:
-    """Allow an MCP server endpoint."""
+def allow(app: AppContext, target: str, reason: str) -> None:
+    """Allow an MCP server (by name or URL)."""
     from defenseclaw.enforce import PolicyEngine
 
     pe = PolicyEngine(app.store)
-    if pe.is_allowed("mcp", url):
-        click.echo(f"Already allowed: {url}")
+    if pe.is_allowed("mcp", target):
+        click.echo(f"Already allowed: {target}")
         return
-    pe.allow("mcp", url, reason or "manually allowed via CLI")
-    click.secho(f"Allowed: {url}", fg="green")
+    pe.allow("mcp", target, reason or "manually allowed via CLI")
+    click.secho(f"Allowed: {target}", fg="green")
 
     if app.logger:
-        app.logger.log_action("allow-mcp", url, f"reason={reason}")
+        app.logger.log_action("allow-mcp", target, f"reason={reason}")
 
 
-@mcp.command("list")
+# ---------------------------------------------------------------------------
+# set / unset  — delegate writes to ``openclaw config set/unset``
+# ---------------------------------------------------------------------------
+
+def _openclaw_config_set(path: str, value: str) -> None:
+    """Write a value via ``openclaw config set`` (schema-validated, hot-reloaded)."""
+    result = subprocess.run(
+        ["openclaw", "config", "set", path, value, "--strict-json"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise click.ClickException(f"openclaw config set failed: {detail}")
+
+
+def _openclaw_config_unset(path: str) -> None:
+    """Remove a value via ``openclaw config unset``."""
+    result = subprocess.run(
+        ["openclaw", "config", "unset", path],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise click.ClickException(f"openclaw config unset failed: {detail}")
+
+
+@mcp.command("set")
+@click.argument("name")
+@click.option("--command", "cmd", default="", help="Server command (e.g. npx, uvx)")
+@click.option("--args", "args_str", default="", help="Command args (JSON array or comma-separated)")
+@click.option("--url", default="", help="Server URL (for SSE/HTTP transport)")
+@click.option("--transport", default="", help="Transport type (stdio, sse)")
+@click.option("--env", "env_pairs", multiple=True, help="Env vars as KEY=VAL (repeatable)")
+@click.option("--skip-scan", is_flag=True, help="Skip security scan before adding")
 @pass_ctx
-def list_mcps(app: AppContext) -> None:
-    """List MCP servers with enforcement status."""
-    from rich.console import Console
-    from rich.table import Table
+def set_server(
+    app: AppContext,
+    name: str,
+    cmd: str,
+    args_str: str,
+    url: str,
+    transport: str,
+    env_pairs: tuple[str, ...],
+    skip_scan: bool,
+) -> None:
+    """Add or update an MCP server in OpenClaw config.
 
+    Scans the server before adding unless --skip-scan is set.
+    Rejects servers with HIGH/CRITICAL findings.
+
+    \b
+    Examples:
+      defenseclaw mcp set context7 --command uvx --args context7-mcp
+      defenseclaw mcp set deepwiki --url https://mcp.deepwiki.com/mcp
+      defenseclaw mcp set myserver --command npx --args '["-y", "@myorg/mcp-server"]'
+      defenseclaw mcp set myserver --command node --args server.js --env API_KEY=xxx
+      defenseclaw mcp set untrusted --url http://example.com/mcp --skip-scan
+    """
     from defenseclaw.enforce import PolicyEngine
 
     pe = PolicyEngine(app.store)
-    entries = pe.list_by_type("mcp")
+    if pe.is_blocked("mcp", name):
+        click.secho(f"BLOCKED: {name} — unblock it first with: defenseclaw mcp unblock {name}", fg="red")
+        raise SystemExit(1)
 
-    if not entries:
-        click.echo("No MCP servers in enforcement lists.")
-        return
-
-    console = Console()
-    table = Table(title="MCP Servers")
-    table.add_column("Endpoint", style="bold")
-    table.add_column("Status")
-    table.add_column("Reason")
-    table.add_column("Updated")
-
-    for e in entries:
-        status = e.actions.summary()
-        style = "red" if "blocked" in status else ("green" if "allowed" in status else "")
-        table.add_row(
-            e.target_name,
-            f"[{style}]{status}[/{style}]" if style else status,
-            e.reason[:50] + "..." if len(e.reason) > 50 else e.reason,
-            e.updated_at.strftime("%Y-%m-%d %H:%M"),
+    if not cmd and not url:
+        raise click.ClickException(
+            "Provide at least --command or --url.\n\n"
+            "Examples:\n"
+            "  defenseclaw mcp set myserver --command uvx --args my-mcp-server\n"
+            "  defenseclaw mcp set myserver --url https://example.com/mcp"
         )
 
-    console.print(table)
+    entry: dict = {}
+    if cmd:
+        entry["command"] = cmd
+    if args_str:
+        entry["args"] = _parse_args(args_str)
+    if url:
+        entry["url"] = url
+    if transport:
+        entry["transport"] = transport
+    if env_pairs:
+        env: dict[str, str] = {}
+        for pair in env_pairs:
+            if "=" not in pair:
+                raise click.ClickException(f"Invalid --env format: {pair!r} (expected KEY=VAL)")
+            k, v = pair.split("=", 1)
+            env[k] = v
+        entry["env"] = env
+
+    if not skip_scan:
+        scan_target = url or name
+        scan_entry = MCPServerEntry(
+            name=name,
+            command=cmd,
+            args=_parse_args(args_str) if args_str else [],
+            url=url,
+            transport=transport,
+        )
+        result = _run_scan(app, scan_target, "", False, False, False,
+                           server_entry=scan_entry)
+        if result is None:
+            click.secho("Scan failed — use --skip-scan to add anyway.", fg="yellow")
+            raise SystemExit(1)
+
+        _print_scan_result(result, as_json=False)
+
+        from defenseclaw.enforce import PolicyEngine
+
+        sev = result.max_severity()
+        if not result.is_clean() and app.cfg.mcp_actions.should_install_block(sev):
+            pe = PolicyEngine(app.store)
+            pe.block("mcp", name, f"scan: {len(result.findings)} findings, max={sev}")
+            click.secho(
+                f"\nBlocked: {name} has {sev} findings — blocked by mcp_actions policy. "
+                "Use --skip-scan to override.",
+                fg="red",
+            )
+            if app.logger:
+                app.logger.log_action(
+                    "mcp-set-blocked", name,
+                    f"severity={sev} findings={len(result.findings)}",
+                )
+            raise SystemExit(1)
+
+    _openclaw_config_set(f"mcp.servers.{name}", json.dumps(entry))
+
+    if not skip_scan:
+        pe = PolicyEngine(app.store)
+        pe.allow("mcp", name, "scan clean or within policy")
+
+    click.secho(f"Added MCP server: {name}", fg="green")
+
+    if app.logger:
+        app.logger.log_action("mcp-set", name, f"command={cmd} url={url}")
+
+
+@mcp.command("unset")
+@click.argument("name")
+@pass_ctx
+def unset_server(app: AppContext, name: str) -> None:
+    """Remove an MCP server from OpenClaw config."""
+    servers = app.cfg.mcp_servers()
+    if not any(s.name == name for s in servers):
+        raise click.ClickException(
+            f"MCP server {name!r} not found in openclaw.json."
+        )
+
+    _openclaw_config_unset(f"mcp.servers.{name}")
+    click.secho(f"Removed MCP server: {name}", fg="yellow")
+
+    if app.logger:
+        app.logger.log_action("mcp-unset", name, "")

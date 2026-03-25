@@ -120,11 +120,11 @@ func (d *Daemon) Start(args []string) (int, error) {
 		return pid, ErrAlreadyRunning
 	}
 
-	if err := os.MkdirAll(d.dataDir, 0755); err != nil {
+	if err := os.MkdirAll(d.dataDir, 0700); err != nil {
 		return 0, fmt.Errorf("daemon: create data dir: %w", err)
 	}
 
-	logFile, err := os.OpenFile(d.logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	logFile, err := os.OpenFile(d.logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return 0, fmt.Errorf("daemon: open log file: %w", err)
 	}
@@ -264,7 +264,7 @@ func (d *Daemon) writePIDInfo(pid int, executable string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(d.pidFile, data, 0644)
+	return os.WriteFile(d.pidFile, data, 0600)
 }
 
 func processExists(pid int) bool {

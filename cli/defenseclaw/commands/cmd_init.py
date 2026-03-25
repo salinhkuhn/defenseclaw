@@ -51,12 +51,14 @@ def init_cmd(app: AppContext, skip_install: bool) -> None:
     for d in dirs:
         os.makedirs(d, exist_ok=True)
 
-    external_dirs = list(cfg.skill_dirs()) + list(cfg.mcp_dirs())
+    external_dirs = list(cfg.skill_dirs())
     for d in external_dirs:
         d_real = os.path.realpath(d)
         if d_real.startswith(data_dir_real + os.sep):
             os.makedirs(d, exist_ok=True)
     click.echo("  Directories: created")
+
+    _seed_rego_policies(cfg.policy_dir)
 
     cfg.save()
     click.echo(f"  Config: {cfg_file}")
@@ -87,31 +89,52 @@ def init_cmd(app: AppContext, skip_install: bool) -> None:
     store.close()
 
 
+def _seed_rego_policies(policy_dir: str) -> None:
+    """Copy bundled Rego policies into the user's policy_dir if not already present."""
+    from pathlib import Path
+
+    here = Path(__file__).resolve()
+    bundled_rego = here.parent.parent.parent.parent / "policies" / "rego"
+    if not bundled_rego.is_dir():
+        return
+
+    dest_rego = os.path.join(policy_dir, "rego")
+    os.makedirs(dest_rego, exist_ok=True)
+
+    for src in bundled_rego.iterdir():
+        if src.suffix in (".rego", ".json") and not src.name.startswith("."):
+            dst = os.path.join(dest_rego, src.name)
+            if not os.path.exists(dst):
+                shutil.copy2(str(src), dst)
+
+    click.echo(f"  Rego policies: seeded in {dest_rego}")
+
+
 def _install_scanners(cfg, logger, skip: bool) -> None:
     if skip:
         click.echo("  Scanners: skipped (--skip-install)")
         return
 
-    _ensure_uv()
+    _verify_scanner_sdk("skill-scanner", "skill_scanner")
+    _verify_scanner_sdk("mcp-scanner", "mcpscanner", min_python=(3, 11))
 
-    deps = [
-        ("skill-scanner", cfg.scanners.skill_scanner.binary, "cisco-ai-skill-scanner"),
-        ("mcp-scanner", cfg.scanners.mcp_scanner, "cisco-ai-mcp-scanner"),
-        ("cisco-aibom", cfg.scanners.aibom, "cisco-aibom"),
-    ]
 
-    for name, binary, pkg in deps:
-        if shutil.which(binary):
-            click.echo(f"  {name}: already installed")
-            continue
+def _verify_scanner_sdk(name: str, import_name: str, min_python: tuple[int, ...] | None = None) -> None:
+    """Check that a scanner SDK is importable; report status."""
+    import importlib
+    import sys
 
-        click.echo(f"  {name}: installing...", nl=False)
-        if _install_with_uv(pkg):
-            click.echo(" done")
-            logger.log_action("install-scanner", name, f"package={pkg}")
-        else:
-            click.echo(" failed")
-            click.echo(f"    install manually: uv tool install {pkg}")
+    if min_python and sys.version_info < min_python:
+        ver = ".".join(str(v) for v in min_python)
+        click.echo(f"  {name}: requires Python >={ver} (skipped)")
+        return
+
+    try:
+        importlib.import_module(import_name)
+        click.echo(f"  {name}: available")
+    except ImportError:
+        click.echo(f"  {name}: not installed")
+        click.echo("    install with: pip install defenseclaw")
 
 
 def _install_guardrail(cfg, logger, skip: bool) -> None:
@@ -203,17 +226,3 @@ def _add_uv_to_path() -> None:
             os.environ["PATH"] = extra + ":" + os.environ.get("PATH", "")
 
 
-def _install_with_uv(pkg: str) -> bool:
-    uv = shutil.which("uv")
-    if not uv:
-        return False
-    try:
-        result = subprocess.run(
-            [uv, "tool", "install", "--python", "3.13", pkg],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0 or "already installed" in result.stderr:
-            return True
-        return False
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
