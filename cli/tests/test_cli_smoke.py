@@ -35,16 +35,18 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Initialize DefenseClaw environment", result.output)
 
-    def test_setup_splunk_local_bootstraps_clean_home(self):
+    def test_setup_splunk_o11y_bootstraps_clean_home(self):
         from defenseclaw.main import cli
 
         runner = CliRunner()
         with runner.isolated_filesystem():
             data_dir = Path(os.getcwd()) / ".defenseclaw"
             with patch("defenseclaw.config.default_data_path", return_value=data_dir):
+                runner.invoke(cli, ["init", "--skip-install"])
                 result = runner.invoke(
                     cli,
-                    ["setup", "splunk-local", "--non-interactive", "--no-bootstrap-bridge"],
+                    ["setup", "splunk", "--o11y", "--access-token", "test-tok",
+                     "--realm", "us1", "--non-interactive"],
                 )
             config_exists = (data_dir / "config.yaml").is_file()
             audit_db_exists = (data_dir / "audit.db").is_file()
@@ -52,7 +54,7 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(config_exists)
         self.assertTrue(audit_db_exists)
-        self.assertIn("Saved to ~/.defenseclaw/config.yaml", result.output)
+        self.assertIn("Config saved to ~/.defenseclaw/config.yaml", result.output)
 
 
 if __name__ == "__main__":
