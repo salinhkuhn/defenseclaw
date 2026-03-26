@@ -21,6 +21,7 @@ from defenseclaw.commands.cmd_policy import policy
 from defenseclaw.commands.cmd_setup import setup
 from defenseclaw.commands.cmd_skill import skill
 from defenseclaw.commands.cmd_status import status
+from defenseclaw.commands.cmd_tool import tool
 from defenseclaw.context import AppContext
 
 SKIP_LOAD_COMMANDS = {"init"}
@@ -96,6 +97,7 @@ cli.add_command(aibom)
 cli.add_command(status)
 cli.add_command(alerts)
 cli.add_command(codeguard)
+cli.add_command(tool)
 
 
 def _ensure_codeguard_skill(cfg) -> None:

@@ -99,3 +99,51 @@ class PolicyEngine:
     def remove_action(self, target_type: str, name: str) -> None:
         if self.store:
             self.store.remove_action(target_type, name)
+
+    # ------------------------------------------------------------------
+    # Tool-level helpers (target_type="tool", scoped naming supported)
+    # ------------------------------------------------------------------
+
+    def is_tool_blocked(self, tool_name: str, source: str = "") -> bool:
+        """Return True if the tool is blocked (scoped check first, then global)."""
+        if not self.store:
+            return False
+        if source:
+            scoped = f"{source}/{tool_name}"
+            if self.store.has_action("tool", scoped, "install", "block"):
+                return True
+        return self.store.has_action("tool", tool_name, "install", "block")
+
+    def is_tool_allowed(self, tool_name: str, source: str = "") -> bool:
+        """Return True if the tool is allowed (scoped check first, then global)."""
+        if not self.store:
+            return False
+        if source:
+            scoped = f"{source}/{tool_name}"
+            if self.store.has_action("tool", scoped, "install", "allow"):
+                return True
+        return self.store.has_action("tool", tool_name, "install", "allow")
+
+    def block_tool(self, tool_name: str, source: str, reason: str) -> None:
+        """Block a tool, optionally scoped to a source."""
+        if self.store:
+            target = f"{source}/{tool_name}" if source else tool_name
+            self.store.set_action_field("tool", target, "install", "block", reason)
+
+    def allow_tool(self, tool_name: str, source: str, reason: str) -> None:
+        """Allow a tool, optionally scoped to a source."""
+        if self.store:
+            target = f"{source}/{tool_name}" if source else tool_name
+            self.store.set_action_field("tool", target, "install", "allow", reason)
+
+    def list_blocked_tools(self) -> list[ActionEntry]:
+        """List all tool-level block entries."""
+        if not self.store:
+            return []
+        return self.store.list_by_action_and_type("install", "block", "tool")
+
+    def list_allowed_tools(self) -> list[ActionEntry]:
+        """List all tool-level allow entries."""
+        if not self.store:
+            return []
+        return self.store.list_by_action_and_type("install", "allow", "tool")

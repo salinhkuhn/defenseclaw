@@ -1,8 +1,24 @@
 declare module "@openclaw/plugin-sdk" {
   interface BeforeToolCallEvent {
     toolName: string;
-    args: Record<string, unknown>;
-    cancel(reason: string): void;
+    params: Record<string, unknown>;
+    runId?: string;
+    toolCallId?: string;
+  }
+
+  interface BeforeToolCallResult {
+    params?: Record<string, unknown>;
+    block?: boolean;
+    blockReason?: string;
+  }
+
+  interface ToolContext {
+    agentId?: string;
+    sessionKey?: string;
+    sessionId?: string;
+    runId?: string;
+    toolName: string;
+    toolCallId?: string;
   }
 
   interface CommandArg {
@@ -24,7 +40,7 @@ declare module "@openclaw/plugin-sdk" {
   }
 
   export interface PluginApi {
-    on(event: "before_tool_call", handler: (event: BeforeToolCallEvent) => void | Promise<void>): void;
+    on(event: "before_tool_call", handler: (event: BeforeToolCallEvent, ctx: ToolContext) => BeforeToolCallResult | void | Promise<BeforeToolCallResult | void>): void;
     on(event: string, handler: (...args: any[]) => void | Promise<void>): void;
     registerCommand(def: CommandRegistration): void;
     registerService(def: ServiceRegistration): void;

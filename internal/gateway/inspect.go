@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -37,6 +38,19 @@ type ToolInspectVerdict struct {
 // inspectToolPolicy runs all rule categories against the tool args.
 // No tool-name gating — every pattern fires on every tool.
 func (a *APIServer) inspectToolPolicy(req *ToolInspectRequest) *ToolInspectVerdict {
+	// Static block list takes priority — checked before any rule scanning.
+	if a.store != nil {
+		if blocked, _ := a.store.HasAction("tool", req.Tool, "install", "block"); blocked {
+			return &ToolInspectVerdict{
+				Action:     "block",
+				Severity:   "HIGH",
+				Confidence: 1.0,
+				Reason:     fmt.Sprintf("tool %q is on the static block list", req.Tool),
+				Findings:   []string{"STATIC-BLOCK"},
+			}
+		}
+	}
+
 	argsStr := string(req.Args)
 	toolName := req.Tool
 
@@ -194,6 +208,9 @@ func (a *APIServer) handleInspectTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	fmt.Fprintf(os.Stderr, "[inspect] >>> tool=%q args=%s content_len=%d direction=%s\n",
+		req.Tool, string(req.Args), len(req.Content), req.Direction)
+
 	t0 := time.Now()
 
 	var verdict *ToolInspectVerdict
@@ -214,6 +231,9 @@ func (a *APIServer) handleInspectTool(w http.ResponseWriter, r *http.Request) {
 	verdict.Mode = mode
 
 	elapsed := time.Since(t0)
+
+	fmt.Fprintf(os.Stderr, "[inspect] <<< tool=%q action=%s severity=%s mode=%s confidence=%.2f elapsed=%s reason=%q findings=%v\n",
+		req.Tool, verdict.Action, verdict.Severity, verdict.Mode, verdict.Confidence, elapsed, verdict.Reason, verdict.Findings)
 
 	var auditAction string
 	switch verdict.Action {

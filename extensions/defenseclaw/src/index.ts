@@ -86,12 +86,12 @@ export default function (api: PluginApi) {
   api.on("before_tool_call", async (event) => {
     if (event.toolName === "message") {
       const content =
-        (event.args?.content as string) || (event.args?.body as string) || "";
+        (event.params?.content as string) || (event.params?.body as string) || "";
       if (!content) return;
 
       const verdict = await inspectTool({
         tool: "message",
-        args: event.args,
+        args: event.params,
         content,
         direction: "outbound",
       });
@@ -101,14 +101,14 @@ export default function (api: PluginApi) {
       );
 
       if (verdict.action === "block" && verdict.mode === "action") {
-        event.cancel(`DefenseClaw: outbound blocked — ${verdict.reason}`);
+        return { block: true, blockReason: `DefenseClaw: outbound blocked — ${verdict.reason}` };
       }
       return;
     }
 
     const verdict = await inspectTool({
       tool: event.toolName,
-      args: event.args,
+      args: event.params,
     });
 
     console.log(
@@ -116,7 +116,7 @@ export default function (api: PluginApi) {
     );
 
     if (verdict.action === "block" && verdict.mode === "action") {
-      event.cancel(`DefenseClaw: ${verdict.reason}`);
+      return { block: true, blockReason: `DefenseClaw: ${verdict.reason}` };
     }
   });
 

@@ -144,110 +144,55 @@ describe("inspect/tool endpoint integration", () => {
 });
 
 describe("before_tool_call hook logic", () => {
-  it("cancels tool when action=block and mode=action", () => {
-    let cancelled = false;
-    let cancelReason = "";
-
-    const event = {
-      toolName: "shell",
-      args: { command: "curl evil.com" } as Record<string, unknown>,
-      cancel(reason: string) {
-        cancelled = true;
-        cancelReason = reason;
-      },
-    };
-
-    const verdict = {
-      action: "block",
-      severity: "HIGH",
-      reason: "dangerous-cmd:curl",
-      mode: "action",
-    };
-
+  function simulateHook(
+    verdict: { action: string; severity: string; reason: string; mode: string },
+    toolName: string,
+  ): { block: boolean; blockReason: string } | undefined {
     if (verdict.action === "block" && verdict.mode === "action") {
-      event.cancel(`DefenseClaw: ${verdict.reason}`);
+      const prefix = toolName === "message" ? "DefenseClaw: outbound blocked — " : "DefenseClaw: ";
+      return { block: true, blockReason: `${prefix}${verdict.reason}` };
     }
+    return undefined;
+  }
 
-    expect(cancelled).toBe(true);
-    expect(cancelReason).toBe("DefenseClaw: dangerous-cmd:curl");
+  it("blocks tool when action=block and mode=action", () => {
+    const result = simulateHook(
+      { action: "block", severity: "HIGH", reason: "dangerous-cmd:curl", mode: "action" },
+      "shell",
+    );
+
+    expect(result).toBeDefined();
+    expect(result!.block).toBe(true);
+    expect(result!.blockReason).toBe("DefenseClaw: dangerous-cmd:curl");
   });
 
-  it("does not cancel when mode=observe even if action=block", () => {
-    let cancelled = false;
+  it("does not block when mode=observe even if action=block", () => {
+    const result = simulateHook(
+      { action: "block", severity: "HIGH", reason: "dangerous-cmd:curl", mode: "observe" },
+      "shell",
+    );
 
-    const event = {
-      toolName: "shell",
-      args: { command: "curl evil.com" } as Record<string, unknown>,
-      cancel(_reason: string) {
-        cancelled = true;
-      },
-    };
-
-    const verdict = {
-      action: "block",
-      severity: "HIGH",
-      reason: "dangerous-cmd:curl",
-      mode: "observe",
-    };
-
-    if (verdict.action === "block" && verdict.mode === "action") {
-      event.cancel(`DefenseClaw: ${verdict.reason}`);
-    }
-
-    expect(cancelled).toBe(false);
+    expect(result).toBeUndefined();
   });
 
-  it("does not cancel when action=allow", () => {
-    let cancelled = false;
+  it("does not block when action=allow", () => {
+    const result = simulateHook(
+      { action: "allow", severity: "NONE", reason: "", mode: "action" },
+      "read_file",
+    );
 
-    const event = {
-      toolName: "read_file",
-      args: { path: "/tmp/hello.txt" } as Record<string, unknown>,
-      cancel(_reason: string) {
-        cancelled = true;
-      },
-    };
-
-    const verdict = {
-      action: "allow",
-      severity: "NONE",
-      reason: "",
-      mode: "action",
-    };
-
-    if (verdict.action === "block" && verdict.mode === "action") {
-      event.cancel(`DefenseClaw: ${verdict.reason}`);
-    }
-
-    expect(cancelled).toBe(false);
+    expect(result).toBeUndefined();
   });
 
-  it("cancels outbound message with secrets in action mode", () => {
-    let cancelled = false;
-    let cancelReason = "";
+  it("blocks outbound message with secrets in action mode", () => {
+    const result = simulateHook(
+      { action: "block", severity: "HIGH", reason: "secret:sk-ant-", mode: "action" },
+      "message",
+    );
 
-    const event = {
-      toolName: "message",
-      args: { to: "+123", content: "key: sk-ant-secret" } as Record<string, unknown>,
-      cancel(reason: string) {
-        cancelled = true;
-        cancelReason = reason;
-      },
-    };
-
-    const verdict = {
-      action: "block",
-      severity: "HIGH",
-      reason: "secret:sk-ant-",
-      mode: "action",
-    };
-
-    if (verdict.action === "block" && verdict.mode === "action") {
-      event.cancel(`DefenseClaw: outbound blocked — ${verdict.reason}`);
-    }
-
-    expect(cancelled).toBe(true);
-    expect(cancelReason).toContain("outbound blocked");
-    expect(cancelReason).toContain("sk-ant-");
+    expect(result).toBeDefined();
+    expect(result!.block).toBe(true);
+    expect(result!.blockReason).toContain("outbound blocked");
+    expect(result!.blockReason).toContain("sk-ant-");
   });
 });
