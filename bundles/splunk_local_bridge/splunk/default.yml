@@ -2,6 +2,7 @@
 ansible_post_tasks:
   - file:///opt/splunk-claw-bridge/splunk/ansible/create_local_user.yml
   - file:///opt/splunk-claw-bridge/splunk/ansible/configure_product_telemetry.yml
+  - file:///opt/splunk-claw-bridge/splunk/ansible/sync_security_ops_support_layer.yml
 
 splunk:
   role: splunk_standalone
@@ -46,6 +47,12 @@ splunk:
         directory: /opt/splunk/etc/system/local
         content:
           tcpout:
+            disabled: true
+    - key: server
+      value:
+        directory: /opt/splunk/etc/system/local
+        content:
+          kvstore:
             disabled: true
     - key: limits
       value:
