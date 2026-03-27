@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/defenseclaw/defenseclaw/internal/config"
 	"github.com/defenseclaw/defenseclaw/internal/scanner"
@@ -809,6 +810,348 @@ func TestRecordLLMTokens_EmitsMetric(t *testing.T) {
 func TestRecordGuardrailEvaluation_DisabledProvider_NoOp(t *testing.T) {
 	p, _ := NewProvider(context.Background(), disabledCfg(), "test")
 	p.RecordGuardrailEvaluation(context.Background(), "test", "block")
+}
+
+func TestDisabledProvider_RecordPolicyEvaluation_NoPanic(t *testing.T) {
+	p, _ := NewProvider(context.Background(), disabledCfg(), "test")
+	ctx := context.Background()
+	p.RecordPolicyEvaluation(ctx, "admission", "blocked")
+	p.RecordPolicyLatency(ctx, "firewall", 42.0)
+	p.RecordPolicyReload(ctx, "success")
+}
+
+func TestDisabledProvider_EmitPolicyDecision_NoPanic(t *testing.T) {
+	p, _ := NewProvider(context.Background(), disabledCfg(), "test")
+	p.EmitPolicyDecision("admission", "blocked", "evil-skill", "skill", "on block list", nil)
+}
+
+func TestEmitPolicyDecision_EnabledProvider_AllVerdicts(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	p, err := NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer p.Shutdown(context.Background())
+
+	p.EmitPolicyDecision("admission", "blocked", "evil-skill", "skill", "on block list", nil)
+	p.EmitPolicyDecision("firewall", "deny", "evil.com", "network", "denied by rule", map[string]string{
+		"rule_name": "block-external",
+	})
+	p.EmitPolicyDecision("reload", "success", "/etc/policies", "", "OPA reload", nil)
+	p.EmitPolicyDecision("admission", "failed", "broken", "skill", "engine error", map[string]string{
+		"error": "timeout",
+		"empty": "",
+	})
+	p.EmitPolicyDecision("sandbox", "allow", "good-skill", "skill", "clean", nil)
+}
+
+func TestDisabledProvider_PolicySpan_NoPanic(t *testing.T) {
+	p, _ := NewProvider(context.Background(), disabledCfg(), "test")
+	ctx, span := p.StartPolicySpan(context.Background(), "firewall", "network", "example.com")
+	if span != nil {
+		t.Error("span should be nil when disabled")
+	}
+	if ctx == nil {
+		t.Error("context should not be nil")
+	}
+	p.EndPolicySpan(nil, "firewall", "allow", "default allow", time.Now().Add(-10*time.Millisecond))
+}
+
+func TestRecordPolicyEvaluation_EmitsMetric(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	p, err := NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer p.Shutdown(context.Background())
+
+	ctx := context.Background()
+	p.RecordPolicyEvaluation(ctx, "admission", "blocked")
+	p.RecordPolicyEvaluation(ctx, "admission", "clean")
+	p.RecordPolicyEvaluation(ctx, "firewall", "deny")
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	found := findCounter(rm, "defenseclaw.policy.evaluations")
+	if found == nil {
+		t.Fatal("metric defenseclaw.policy.evaluations not found")
+	}
+
+	sum, ok := found.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("expected Sum[int64], got %T", found.Data)
+	}
+
+	blockedCount := counterValueByAttr(sum, "policy.verdict", "blocked")
+	if blockedCount != 1 {
+		t.Errorf("blocked count = %d, want 1", blockedCount)
+	}
+
+	cleanCount := counterValueByAttr(sum, "policy.verdict", "clean")
+	if cleanCount != 1 {
+		t.Errorf("clean count = %d, want 1", cleanCount)
+	}
+
+	denyCount := counterValueByAttr(sum, "policy.verdict", "deny")
+	if denyCount != 1 {
+		t.Errorf("deny count = %d, want 1", denyCount)
+	}
+}
+
+func TestRecordPolicyLatency_EmitsMetric(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	p, err := NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer p.Shutdown(context.Background())
+
+	ctx := context.Background()
+	p.RecordPolicyLatency(ctx, "admission", 5.0)
+	p.RecordPolicyLatency(ctx, "admission", 12.5)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	found := findHistogram(rm, "defenseclaw.policy.latency")
+	if found == nil {
+		t.Fatal("metric defenseclaw.policy.latency not found")
+	}
+
+	hist, ok := found.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", found.Data)
+	}
+
+	if len(hist.DataPoints) == 0 {
+		t.Fatal("expected at least one histogram data point")
+	}
+
+	dp := hist.DataPoints[0]
+	if dp.Count != 2 {
+		t.Errorf("histogram count = %d, want 2", dp.Count)
+	}
+	if dp.Sum != 17.5 {
+		t.Errorf("histogram sum = %f, want 17.5", dp.Sum)
+	}
+}
+
+func TestRecordPolicyReload_EmitsMetric(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	p, err := NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer p.Shutdown(context.Background())
+
+	ctx := context.Background()
+	p.RecordPolicyReload(ctx, "success")
+	p.RecordPolicyReload(ctx, "failed")
+	p.RecordPolicyReload(ctx, "success")
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	found := findCounter(rm, "defenseclaw.policy.reloads")
+	if found == nil {
+		t.Fatal("metric defenseclaw.policy.reloads not found")
+	}
+
+	sum, ok := found.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("expected Sum[int64], got %T", found.Data)
+	}
+
+	successCount := counterValueByAttr(sum, "policy.status", "success")
+	failedCount := counterValueByAttr(sum, "policy.status", "failed")
+
+	if successCount != 2 {
+		t.Errorf("success count = %d, want 2", successCount)
+	}
+	if failedCount != 1 {
+		t.Errorf("failed count = %d, want 1", failedCount)
+	}
+}
+
+func TestStartEndPolicySpan_RecordsAttributes(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	exporter := tracetest.NewInMemoryExporter()
+	p, err := NewProviderForTraceTest(reader, exporter)
+	if err != nil {
+		t.Fatalf("NewProviderForTraceTest: %v", err)
+	}
+	defer p.Shutdown(context.Background())
+
+	ctx := context.Background()
+	start := time.Now()
+	ctx, span := p.StartPolicySpan(ctx, "firewall", "network", "evil.example.com")
+	if span == nil {
+		t.Fatal("span should not be nil with trace-enabled provider")
+	}
+	if ctx == nil {
+		t.Fatal("context should not be nil")
+	}
+
+	time.Sleep(time.Millisecond)
+	p.EndPolicySpan(span, "firewall", "deny", "blocked by firewall rule", start)
+
+	spans := exporter.GetSpans()
+	if len(spans) == 0 {
+		t.Fatal("expected at least one recorded span")
+	}
+
+	s := spans[len(spans)-1]
+	if s.Name != "policy/firewall" {
+		t.Errorf("span name = %q, want %q", s.Name, "policy/firewall")
+	}
+
+	attrMap := make(map[string]string)
+	for _, a := range s.Attributes {
+		attrMap[string(a.Key)] = a.Value.AsString()
+	}
+	if attrMap["defenseclaw.policy.domain"] != "firewall" {
+		t.Errorf("domain attr = %q, want %q", attrMap["defenseclaw.policy.domain"], "firewall")
+	}
+	if attrMap["defenseclaw.policy.target_type"] != "network" {
+		t.Errorf("target_type attr = %q, want %q", attrMap["defenseclaw.policy.target_type"], "network")
+	}
+	if attrMap["defenseclaw.policy.target_name"] != "evil.example.com" {
+		t.Errorf("target_name attr = %q, want %q", attrMap["defenseclaw.policy.target_name"], "evil.example.com")
+	}
+	if attrMap["defenseclaw.policy.verdict"] != "deny" {
+		t.Errorf("verdict attr = %q, want %q", attrMap["defenseclaw.policy.verdict"], "deny")
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	evalMetric := findCounter(rm, "defenseclaw.policy.evaluations")
+	if evalMetric == nil {
+		t.Fatal("EndPolicySpan should also record policy.evaluations metric")
+	}
+}
+
+func TestStartEndPolicySpan_BlockedSetsErrorStatus(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	exporter := tracetest.NewInMemoryExporter()
+	p, err := NewProviderForTraceTest(reader, exporter)
+	if err != nil {
+		t.Fatalf("NewProviderForTraceTest: %v", err)
+	}
+	defer p.Shutdown(context.Background())
+
+	start := time.Now()
+	_, span := p.StartPolicySpan(context.Background(), "admission", "skill", "evil-skill")
+	p.EndPolicySpan(span, "admission", "blocked", "on block list", start)
+
+	spans := exporter.GetSpans()
+	if len(spans) == 0 {
+		t.Fatal("expected recorded span")
+	}
+	s := spans[len(spans)-1]
+	if s.Status.Code.String() != "Error" {
+		t.Errorf("span status = %q, want Error for blocked verdict", s.Status.Code.String())
+	}
+}
+
+func TestStartEndPolicySpan_AllowSetsOkStatus(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	exporter := tracetest.NewInMemoryExporter()
+	p, err := NewProviderForTraceTest(reader, exporter)
+	if err != nil {
+		t.Fatalf("NewProviderForTraceTest: %v", err)
+	}
+	defer p.Shutdown(context.Background())
+
+	start := time.Now()
+	_, span := p.StartPolicySpan(context.Background(), "admission", "skill", "safe-skill")
+	p.EndPolicySpan(span, "admission", "allow", "clean scan", start)
+
+	spans := exporter.GetSpans()
+	if len(spans) == 0 {
+		t.Fatal("expected recorded span")
+	}
+	s := spans[len(spans)-1]
+	if s.Status.Code.String() != "Ok" {
+		t.Errorf("span status = %q, want Ok for allow verdict", s.Status.Code.String())
+	}
+}
+
+func TestEndPolicySpan_NilSpan_StillRecordsMetrics(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	p, err := NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer p.Shutdown(context.Background())
+
+	p.EndPolicySpan(nil, "sandbox", "restrict", "denied endpoints", time.Now().Add(-5*time.Millisecond))
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	evalMetric := findCounter(rm, "defenseclaw.policy.evaluations")
+	if evalMetric == nil {
+		t.Fatal("EndPolicySpan(nil) should still record policy.evaluations metric")
+	}
+}
+
+func TestNilProvider_PolicyMethods_NoPanic(t *testing.T) {
+	var p *Provider
+	ctx := context.Background()
+
+	p.RecordPolicyEvaluation(ctx, "admission", "blocked")
+	p.RecordPolicyLatency(ctx, "firewall", 10.0)
+	p.RecordPolicyReload(ctx, "success")
+	p.EmitPolicyDecision("admission", "blocked", "target", "skill", "reason", nil)
+
+	ctx2, span := p.StartPolicySpan(ctx, "firewall", "network", "example.com")
+	if span != nil {
+		t.Error("nil provider should return nil span")
+	}
+	if ctx2 == nil {
+		t.Error("nil provider should still return non-nil context")
+	}
+	p.EndPolicySpan(nil, "firewall", "deny", "reason", time.Now())
+}
+
+func TestPolicyVerdictSeverity(t *testing.T) {
+	tests := []struct {
+		verdict  string
+		wantText string
+		wantNum  int
+	}{
+		{"blocked", "WARN", 13},
+		{"rejected", "WARN", 13},
+		{"deny", "WARN", 13},
+		{"block", "WARN", 13},
+		{"failed", "ERROR", 17},
+		{"allow", "INFO", 9},
+		{"clean", "INFO", 9},
+		{"success", "INFO", 9},
+	}
+	for _, tt := range tests {
+		t.Run(tt.verdict, func(t *testing.T) {
+			text, num := policyVerdictSeverity(tt.verdict)
+			if text != tt.wantText {
+				t.Errorf("text: got %q, want %q", text, tt.wantText)
+			}
+			if num != tt.wantNum {
+				t.Errorf("num: got %d, want %d", num, tt.wantNum)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

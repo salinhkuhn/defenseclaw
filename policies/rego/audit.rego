@@ -15,27 +15,24 @@ import rego.v1
 #   audit.log_scan_results   - whether to log scan results
 #   severity_ranking         - severity → int ranking
 
-default retain := true
-
 default retain_reason := "within retention period"
 
-# Expire events older than the retention period.
-retain := false if {
+# High-severity events are always retained regardless of age.
+# Use else-chain to avoid conflict when both conditions are true.
+retain := true if {
+	data.severity_ranking[input.severity] >= data.severity_ranking.HIGH
+} else := false if {
+	input.age_days > data.audit.retention_days
+} else := true
+
+retain_reason := "high severity events are retained indefinitely" if {
+	data.severity_ranking[input.severity] >= data.severity_ranking.HIGH
 	input.age_days > data.audit.retention_days
 }
 
 retain_reason := "exceeded retention period" if {
 	input.age_days > data.audit.retention_days
-}
-
-# Always retain high-severity events regardless of age.
-retain := true if {
-	data.severity_ranking[input.severity] >= data.severity_ranking.HIGH
-}
-
-retain_reason := "high severity events are retained indefinitely" if {
-	input.age_days > data.audit.retention_days
-	data.severity_ranking[input.severity] >= data.severity_ranking.HIGH
+	data.severity_ranking[input.severity] < data.severity_ranking.HIGH
 }
 
 # Export to all available targets when severity is HIGH or above.

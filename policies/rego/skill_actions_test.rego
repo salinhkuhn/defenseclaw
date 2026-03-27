@@ -4,64 +4,80 @@ import rego.v1
 
 import data.defenseclaw.skill_actions
 
+# --- Basic severity mapping ---
+
 test_critical_blocks if {
 	result := skill_actions with input as {"severity": "CRITICAL"}
-		with data.actions as {
-			"CRITICAL": {"runtime": "block", "file": "quarantine"},
+		with data.actions as {"CRITICAL": {"runtime": "block", "file": "quarantine", "install": "block"}}
+		with data.scanner_overrides as {}
+
+	result.runtime_action == "block"
+	result.file_action == "quarantine"
+	result.install_action == "block"
+	result.should_block
+	result.should_quarantine
+	result.should_block_install
+}
+
+test_low_allows if {
+	result := skill_actions with input as {"severity": "LOW"}
+		with data.actions as {"LOW": {"runtime": "allow", "file": "none", "install": "none"}}
+		with data.scanner_overrides as {}
+
+	result.runtime_action == "allow"
+	result.file_action == "none"
+	result.install_action == "none"
+	not result.should_block
+	not result.should_quarantine
+	not result.should_block_install
+}
+
+# --- Scanner-type override ---
+
+test_mcp_override_blocks_medium if {
+	result := skill_actions with input as {"severity": "MEDIUM", "target_type": "mcp"}
+		with data.actions as {"MEDIUM": {"runtime": "allow", "file": "none", "install": "none"}}
+		with data.scanner_overrides as {
+			"mcp": {"MEDIUM": {"runtime": "block", "file": "quarantine", "install": "block"}},
 		}
 
 	result.runtime_action == "block"
 	result.file_action == "quarantine"
-	result.should_block == true
-	result.should_quarantine == true
+	result.install_action == "block"
+	result.should_block
 }
 
-test_medium_allows if {
-	result := skill_actions with input as {"severity": "MEDIUM"}
-		with data.actions as {
-			"MEDIUM": {"runtime": "allow", "file": "none"},
+test_skill_uses_global_when_no_override if {
+	result := skill_actions with input as {"severity": "MEDIUM", "target_type": "skill"}
+		with data.actions as {"MEDIUM": {"runtime": "allow", "file": "none", "install": "none"}}
+		with data.scanner_overrides as {
+			"mcp": {"MEDIUM": {"runtime": "block", "file": "quarantine", "install": "block"}},
 		}
 
 	result.runtime_action == "allow"
-	result.file_action == "none"
 	not result.should_block
-	not result.should_quarantine
 }
 
-test_high_blocks_default if {
-	result := skill_actions with input as {"severity": "HIGH"}
-		with data.actions as {
-			"HIGH": {"runtime": "block", "file": "quarantine"},
+test_plugin_override if {
+	result := skill_actions with input as {"severity": "HIGH", "target_type": "plugin"}
+		with data.actions as {"HIGH": {"runtime": "allow", "file": "none", "install": "none"}}
+		with data.scanner_overrides as {
+			"plugin": {"HIGH": {"runtime": "block", "file": "quarantine", "install": "block"}},
 		}
 
 	result.runtime_action == "block"
-	result.should_block == true
+	result.should_block
 }
 
-test_unknown_severity_defaults if {
-	result := skill_actions with input as {"severity": "UNKNOWN"}
-		with data.actions as {}
+# --- No target_type (backward compat) ---
 
-	result.runtime_action == "allow"
-	result.file_action == "none"
-}
-
-test_info_allows if {
-	result := skill_actions with input as {"severity": "INFO"}
-		with data.actions as {
-			"INFO": {"runtime": "allow", "file": "none"},
-		}
-
-	result.runtime_action == "allow"
-	result.file_action == "none"
-}
-
-test_permissive_high_allows if {
+test_no_target_type_uses_global if {
 	result := skill_actions with input as {"severity": "HIGH"}
-		with data.actions as {
-			"HIGH": {"runtime": "allow", "file": "none"},
+		with data.actions as {"HIGH": {"runtime": "block", "file": "quarantine", "install": "block"}}
+		with data.scanner_overrides as {
+			"mcp": {"HIGH": {"runtime": "allow", "file": "none", "install": "none"}},
 		}
 
-	result.runtime_action == "allow"
-	not result.should_block
+	result.runtime_action == "block"
+	result.should_block
 }

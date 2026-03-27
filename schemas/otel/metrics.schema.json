@@ -182,6 +182,57 @@
           }
         }
       ]
+    },
+    "policy_metrics": {
+      "type": "array",
+      "description": "Metrics related to OPA policy evaluation across all domains.",
+      "items": { "$ref": "#/$defs/metricDef" },
+      "default": [
+        {
+          "name": "defenseclaw.policy.evaluations",
+          "type": "counter",
+          "unit": "{evaluation}",
+          "description": "Total OPA policy evaluations per domain.",
+          "attributes": {
+            "policy.domain": {
+              "type": "string",
+              "enum": ["admission", "firewall", "sandbox", "audit", "skill-actions", "guardrail"],
+              "description": "Policy domain evaluated."
+            },
+            "policy.verdict": {
+              "type": "string",
+              "enum": ["allow", "deny", "block", "blocked", "rejected", "clean", "warning", "retain", "expire", "restrict", "enforce", "scan"],
+              "description": "Verdict returned by the policy evaluation."
+            }
+          }
+        },
+        {
+          "name": "defenseclaw.policy.latency",
+          "type": "histogram",
+          "unit": "ms",
+          "description": "OPA policy evaluation latency distribution.",
+          "attributes": {
+            "policy.domain": {
+              "type": "string",
+              "enum": ["admission", "firewall", "sandbox", "audit", "skill-actions", "guardrail"],
+              "description": "Policy domain evaluated."
+            }
+          }
+        },
+        {
+          "name": "defenseclaw.policy.reloads",
+          "type": "counter",
+          "unit": "{reload}",
+          "description": "Total OPA policy reload events.",
+          "attributes": {
+            "policy.status": {
+              "type": "string",
+              "enum": ["success", "failed"],
+              "description": "Outcome of the reload operation."
+            }
+          }
+        }
+      ]
     }
   },
   "$defs": {

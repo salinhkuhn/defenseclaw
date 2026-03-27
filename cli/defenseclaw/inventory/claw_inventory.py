@@ -332,7 +332,7 @@ def _build_summary(inv: dict[str, Any]) -> dict[str, Any]:
     plugins = inv.get("plugins", [])
 
     n_eligible = sum(1 for s in skills if s.get("eligible"))
-    n_loaded = sum(1 for p in plugins if p.get("enabled"))
+    n_loaded = sum(1 for p in plugins if p.get("status") == "loaded")
     n_disabled = sum(1 for p in plugins if not p.get("enabled"))
 
     cats = {
@@ -545,7 +545,7 @@ def _render_plugins(console: Any, plugins: list[dict[str, Any]]) -> None:
 
     from rich.table import Table
 
-    loaded = [p for p in plugins if p.get("enabled")]
+    loaded = [p for p in plugins if p.get("status") == "loaded"]
     disabled = [p for p in plugins if not p.get("enabled")]
     has_policy = any(p.get("policy_verdict") for p in plugins)
     has_scan = any("scan_findings" in p for p in plugins)

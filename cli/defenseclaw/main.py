@@ -14,6 +14,7 @@ from defenseclaw import __version__
 from defenseclaw.commands.cmd_aibom import aibom
 from defenseclaw.commands.cmd_alerts import alerts
 from defenseclaw.commands.cmd_codeguard import codeguard
+from defenseclaw.commands.cmd_doctor import doctor
 from defenseclaw.commands.cmd_init import init_cmd
 from defenseclaw.commands.cmd_mcp import mcp
 from defenseclaw.commands.cmd_plugin import plugin
@@ -98,6 +99,7 @@ cli.add_command(status)
 cli.add_command(alerts)
 cli.add_command(codeguard)
 cli.add_command(tool)
+cli.add_command(doctor)
 
 
 def _ensure_codeguard_skill(cfg) -> None:

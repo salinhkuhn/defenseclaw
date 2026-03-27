@@ -42,7 +42,7 @@ type metricsSet struct {
 	watcherErrors   metric.Int64Counter
 	watcherRestarts metric.Int64Counter
 
-	// Inspect metrics (policy-rules for all tool/message paths)
+	// Inspect metrics
 	inspectEvaluations metric.Int64Counter
 	inspectLatency     metric.Float64Histogram
 
@@ -52,6 +52,11 @@ type metricsSet struct {
 
 	// Config metrics
 	configLoadErrors metric.Int64Counter
+
+	// Policy evaluation metrics
+	policyEvaluations metric.Int64Counter
+	policyLatency     metric.Float64Histogram
+	policyReloads     metric.Int64Counter
 }
 
 func newMetricsSet(m metric.Meter) (*metricsSet, error) {
@@ -212,9 +217,23 @@ func newMetricsSet(m metric.Meter) (*metricsSet, error) {
 		return nil, err
 	}
 
+	ms.policyEvaluations, err = m.Int64Counter("defenseclaw.policy.evaluations",
+		metric.WithUnit("{evaluation}"),
+		metric.WithDescription("Total OPA policy evaluations per domain"))
+	if err != nil {
+		return nil, err
+	}
+
 	ms.inspectLatency, err = m.Float64Histogram("defenseclaw.inspect.latency",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Tool/message inspect latency distribution"))
+	if err != nil {
+		return nil, err
+	}
+
+	ms.policyLatency, err = m.Float64Histogram("defenseclaw.policy.latency",
+		metric.WithUnit("ms"),
+		metric.WithDescription("OPA policy evaluation latency distribution"))
 	if err != nil {
 		return nil, err
 	}
@@ -236,6 +255,13 @@ func newMetricsSet(m metric.Meter) (*metricsSet, error) {
 	ms.configLoadErrors, err = m.Int64Counter("defenseclaw.config.load.errors",
 		metric.WithUnit("{error}"),
 		metric.WithDescription("Configuration load or validation errors"))
+	if err != nil {
+		return nil, err
+	}
+
+	ms.policyReloads, err = m.Int64Counter("defenseclaw.policy.reloads",
+		metric.WithUnit("{reload}"),
+		metric.WithDescription("Total OPA policy reload events"))
 	if err != nil {
 		return nil, err
 	}
@@ -511,5 +537,36 @@ func (p *Provider) RecordConfigLoadError(ctx context.Context, errorType string) 
 	}
 	p.metrics.configLoadErrors.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("error_type", errorType),
+	))
+}
+
+// RecordPolicyEvaluation records a policy evaluation metric for the given domain.
+func (p *Provider) RecordPolicyEvaluation(ctx context.Context, domain, verdict string) {
+	if !p.Enabled() || p.metrics == nil {
+		return
+	}
+	p.metrics.policyEvaluations.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("policy.domain", domain),
+		attribute.String("policy.verdict", verdict),
+	))
+}
+
+// RecordPolicyLatency records policy evaluation latency for the given domain.
+func (p *Provider) RecordPolicyLatency(ctx context.Context, domain string, durationMs float64) {
+	if !p.Enabled() || p.metrics == nil {
+		return
+	}
+	p.metrics.policyLatency.Record(ctx, durationMs, metric.WithAttributes(
+		attribute.String("policy.domain", domain),
+	))
+}
+
+// RecordPolicyReload records a policy reload event.
+func (p *Provider) RecordPolicyReload(ctx context.Context, status string) {
+	if !p.Enabled() || p.metrics == nil {
+		return
+	}
+	p.metrics.policyReloads.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("policy.status", status),
 	))
 }

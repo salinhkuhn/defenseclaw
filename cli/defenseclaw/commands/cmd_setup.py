@@ -33,6 +33,7 @@ def setup() -> None:
 @click.option("--llm-consensus-runs", type=int, default=None, help="LLM consensus runs (0=disabled)")
 @click.option("--policy", default=None, help="Scan policy preset (strict, balanced, permissive)")
 @click.option("--lenient", is_flag=True, default=None, help="Tolerate malformed skills")
+@click.option("--verify/--no-verify", default=True, help="Run connectivity checks after setup (default: on)")
 @click.option("--non-interactive", is_flag=True, help="Use flags instead of prompts")
 @pass_ctx
 def setup_skill_scanner(
@@ -40,7 +41,7 @@ def setup_skill_scanner(
     use_llm, use_behavioral, enable_meta, use_trigger,
     use_virustotal, use_aidefense,
     llm_provider, llm_model, llm_consensus_runs,
-    policy, lenient, non_interactive,
+    policy, lenient, verify, non_interactive,
 ) -> None:
     """Configure skill-scanner analyzers, API keys, and policy.
 
@@ -84,6 +85,17 @@ def setup_skill_scanner(
 
     app.cfg.save()
     _print_summary(sc, llm, aid)
+
+    if verify:
+        from defenseclaw.commands.cmd_doctor import _check_scanners, _check_virustotal, _DoctorResult
+        click.echo("  ── Verifying scanner configuration ──")
+        r = _DoctorResult()
+        _check_scanners(app.cfg, r)
+        _check_virustotal(app.cfg, r)
+        click.echo()
+        if r.failed:
+            click.echo("  Tip: fix the issues above, then run 'defenseclaw doctor' to re-check.")
+            click.echo()
 
     if app.logger:
         parts = [f"use_llm={sc.use_llm}", f"use_behavioral={sc.use_behavioral}", f"enable_meta={sc.enable_meta}"]
@@ -387,6 +399,7 @@ def _print_mcp_summary(mc, llm, aid) -> None:
 @click.option("--ssm-param", default=None, help="AWS SSM parameter name for token")
 @click.option("--ssm-region", default=None, help="AWS region for SSM")
 @click.option("--ssm-profile", default=None, help="AWS CLI profile for SSM")
+@click.option("--verify/--no-verify", default=True, help="Run connectivity checks after setup (default: on)")
 @click.option("--non-interactive", is_flag=True, help="Use flags instead of prompts")
 @pass_ctx
 def setup_gateway(
@@ -394,6 +407,7 @@ def setup_gateway(
     remote: bool,
     host, port, api_port, token,
     ssm_param, ssm_region, ssm_profile,
+    verify: bool,
     non_interactive: bool,
 ) -> None:
     """Configure gateway connection for the DefenseClaw sidecar.
@@ -431,6 +445,17 @@ def setup_gateway(
 
     app.cfg.save()
     _print_gateway_summary(gw)
+
+    if verify:
+        from defenseclaw.commands.cmd_doctor import _check_openclaw_gateway, _check_sidecar, _DoctorResult
+        click.echo("  ── Verifying gateway connectivity ──")
+        r = _DoctorResult()
+        _check_openclaw_gateway(app.cfg, r)
+        _check_sidecar(app.cfg, r)
+        click.echo()
+        if r.failed:
+            click.echo("  Tip: fix the issues above, then run 'defenseclaw doctor' to re-check.")
+            click.echo()
 
     if app.logger:
         mode = "remote" if (remote or gw.token) else "local"
@@ -541,6 +566,7 @@ def _fetch_ssm_token(param: str, region: str, profile: str | None) -> str | None
 @click.option("--block-message", default=None,
               help="Custom message shown when a request is blocked (empty = default)")
 @click.option("--restart", is_flag=True, help="Restart defenseclaw-gateway and openclaw gateway after setup")
+@click.option("--verify/--no-verify", default=True, help="Run connectivity checks after setup (default: on)")
 @click.option("--non-interactive", is_flag=True, help="Use flags instead of prompts")
 @pass_ctx
 def setup_guardrail(
@@ -550,6 +576,7 @@ def setup_guardrail(
     scanner_mode, cisco_endpoint, cisco_api_key_env, cisco_timeout_ms,
     block_message,
     restart: bool,
+    verify: bool,
     non_interactive: bool,
 ) -> None:
     """Configure the LLM guardrail (routes LLM traffic through LiteLLM for inspection).

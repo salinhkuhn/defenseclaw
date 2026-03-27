@@ -247,6 +247,59 @@ func (p *Provider) EndLLMSpan(
 	span.End()
 }
 
+// StartPolicySpan starts a new OTel span for an OPA policy evaluation.
+// Metrics are always recorded when OTel is enabled, even if traces are off.
+func (p *Provider) StartPolicySpan(ctx context.Context, domain, targetType, targetName string) (context.Context, trace.Span) {
+	if !p.Enabled() {
+		return ctx, nil
+	}
+
+	if !p.TracesEnabled() {
+		return ctx, nil
+	}
+
+	ctx, span := p.tracer.Start(ctx, fmt.Sprintf("policy/%s", domain),
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithTimestamp(time.Now()),
+	)
+
+	span.SetAttributes(
+		attribute.String("defenseclaw.policy.domain", domain),
+		attribute.String("defenseclaw.policy.target_type", targetType),
+		attribute.String("defenseclaw.policy.target_name", targetName),
+	)
+
+	return ctx, span
+}
+
+// EndPolicySpan ends an active policy evaluation span with verdict data.
+// Metrics are always recorded when OTel is enabled, even if the span is nil.
+func (p *Provider) EndPolicySpan(span trace.Span, domain, verdict, reason string, startTime time.Time) {
+	ctx := context.Background()
+	durationMs := float64(time.Since(startTime).Milliseconds())
+
+	p.RecordPolicyEvaluation(ctx, domain, verdict)
+	p.RecordPolicyLatency(ctx, domain, durationMs)
+
+	if span == nil {
+		return
+	}
+
+	span.SetAttributes(
+		attribute.String("defenseclaw.policy.verdict", verdict),
+		attribute.String("defenseclaw.policy.reason", truncateStr(reason, 256)),
+	)
+
+	switch verdict {
+	case "blocked", "rejected", "deny":
+		span.SetStatus(codes.Error, verdict)
+	default:
+		span.SetStatus(codes.Ok, "")
+	}
+
+	span.End()
+}
+
 // baseCommand extracts the executable name from a command string,
 // stripping path prefixes and arguments to avoid leaking sensitive content.
 func baseCommand(cmd string) string {

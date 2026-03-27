@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/open-policy-agent/opa/ast"            //nolint:staticcheck // v0 compat; migrate to opa/v1 later
 	"github.com/open-policy-agent/opa/rego"           //nolint:staticcheck // v0 compat; migrate to opa/v1 later
@@ -13,8 +14,10 @@ import (
 	"github.com/open-policy-agent/opa/storage/inmem"  //nolint:staticcheck // v0 compat; migrate to opa/v1 later
 )
 
-// Engine evaluates OPA Rego policies for the admission gate.
+// Engine evaluates OPA Rego policies for admission, guardrail, firewall,
+// sandbox, audit, and skill_actions domains.
 type Engine struct {
+	mu      sync.RWMutex
 	regoDir string
 	store   storage.Store
 }
@@ -22,6 +25,209 @@ type Engine struct {
 // New creates an Engine. regoDir is the path to the directory containing
 // the Rego modules and data.json (e.g. policies/rego/).
 func New(regoDir string) (*Engine, error) {
+	store, err := loadStore(regoDir)
+	if err != nil {
+		return nil, err
+	}
+	return &Engine{regoDir: regoDir, store: store}, nil
+}
+
+// Reload re-reads data.json and all .rego files, replacing the in-memory
+// store atomically. Returns a compilation error if the new modules fail
+// to compile so the caller can decide whether to keep the old state.
+func (e *Engine) Reload() error {
+	store, err := loadStore(e.regoDir)
+	if err != nil {
+		return err
+	}
+
+	modules, err := readModules(e.regoDir)
+	if err != nil {
+		return err
+	}
+	if err := compileModules(modules); err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	e.store = store
+	e.mu.Unlock()
+	return nil
+}
+
+// RegoDir returns the directory the engine loads Rego files from.
+func (e *Engine) RegoDir() string {
+	return e.regoDir
+}
+
+// ---------------------------------------------------------------------------
+// Admission
+// ---------------------------------------------------------------------------
+
+// Evaluate runs the admission policy against the provided input and returns
+// the verdict, reason, file_action, and install_action.
+func (e *Engine) Evaluate(ctx context.Context, input AdmissionInput) (*AdmissionOutput, error) {
+	result, err := e.eval(ctx, "data.defenseclaw.admission", input)
+	if err != nil {
+		return nil, fmt.Errorf("policy: admission eval: %w", err)
+	}
+	return &AdmissionOutput{
+		Verdict:       stringVal(result, "verdict"),
+		Reason:        stringVal(result, "reason"),
+		FileAction:    stringVal(result, "file_action"),
+		InstallAction: stringVal(result, "install_action"),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Guardrail
+// ---------------------------------------------------------------------------
+
+// EvaluateGuardrail runs the LLM guardrail policy against combined scanner results.
+func (e *Engine) EvaluateGuardrail(ctx context.Context, input GuardrailInput) (*GuardrailOutput, error) {
+	result, err := e.eval(ctx, "data.defenseclaw.guardrail", input)
+	if err != nil {
+		return nil, fmt.Errorf("policy: guardrail eval: %w", err)
+	}
+
+	sources := toStringSlice(result, "scanner_sources")
+	return &GuardrailOutput{
+		Action:         stringVal(result, "action"),
+		Severity:       stringVal(result, "severity"),
+		Reason:         stringVal(result, "reason"),
+		ScannerSources: sources,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Firewall
+// ---------------------------------------------------------------------------
+
+// EvaluateFirewall runs the egress firewall policy for a given destination.
+func (e *Engine) EvaluateFirewall(ctx context.Context, input FirewallInput) (*FirewallOutput, error) {
+	result, err := e.eval(ctx, "data.defenseclaw.firewall", input)
+	if err != nil {
+		return nil, fmt.Errorf("policy: firewall eval: %w", err)
+	}
+	return &FirewallOutput{
+		Action:   stringVal(result, "action"),
+		RuleName: stringVal(result, "rule_name"),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox
+// ---------------------------------------------------------------------------
+
+// EvaluateSandbox runs the sandbox policy for skill endpoint/permission shaping.
+func (e *Engine) EvaluateSandbox(ctx context.Context, input SandboxInput) (*SandboxOutput, error) {
+	result, err := e.eval(ctx, "data.defenseclaw.sandbox", input)
+	if err != nil {
+		return nil, fmt.Errorf("policy: sandbox eval: %w", err)
+	}
+	return &SandboxOutput{
+		AllowedEndpoints:  toStringSlice(result, "allowed_endpoints"),
+		DeniedEndpoints:   toStringSlice(result, "denied_endpoints"),
+		DeniedFromRequest: toStringSlice(result, "denied_from_request"),
+		Permissions:       toStringSlice(result, "permissions"),
+		AllowedSkills:     toStringSlice(result, "allowed_skills"),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+// EvaluateAudit runs the audit retention/export policy for a given event.
+func (e *Engine) EvaluateAudit(ctx context.Context, input AuditInput) (*AuditOutput, error) {
+	result, err := e.eval(ctx, "data.defenseclaw.audit", input)
+	if err != nil {
+		return nil, fmt.Errorf("policy: audit eval: %w", err)
+	}
+	return &AuditOutput{
+		Retain:       boolVal(result, "retain"),
+		RetainReason: stringVal(result, "retain_reason"),
+		ExportTo:     toStringSlice(result, "export_to"),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Skill Actions
+// ---------------------------------------------------------------------------
+
+// EvaluateSkillActions runs the skill_actions policy to map severity to actions.
+func (e *Engine) EvaluateSkillActions(ctx context.Context, input SkillActionsInput) (*SkillActionsOutput, error) {
+	result, err := e.eval(ctx, "data.defenseclaw.skill_actions", input)
+	if err != nil {
+		return nil, fmt.Errorf("policy: skill_actions eval: %w", err)
+	}
+	return &SkillActionsOutput{
+		RuntimeAction: stringVal(result, "runtime_action"),
+		FileAction:    stringVal(result, "file_action"),
+		InstallAction: stringVal(result, "install_action"),
+		ShouldBlock:   boolVal(result, "should_block"),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Compile
+// ---------------------------------------------------------------------------
+
+// Compile performs a one-time compilation check of the Rego modules,
+// useful for fast-failing at startup.
+func (e *Engine) Compile() error {
+	modules, err := readModules(e.regoDir)
+	if err != nil {
+		return err
+	}
+	return compileModules(modules)
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+func (e *Engine) eval(ctx context.Context, query string, input interface{}) (map[string]interface{}, error) {
+	e.mu.RLock()
+	store := e.store
+	e.mu.RUnlock()
+
+	modules, err := readModules(e.regoDir)
+	if err != nil {
+		return nil, err
+	}
+
+	inputMap, err := toMap(input)
+	if err != nil {
+		return nil, fmt.Errorf("marshal input: %w", err)
+	}
+
+	opts := []func(*rego.Rego){
+		rego.Query(query),
+		rego.Store(store),
+		rego.Input(inputMap),
+	}
+	for name, src := range modules {
+		opts = append(opts, rego.Module(name, src))
+	}
+
+	rs, err := rego.New(opts...).Eval(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(rs) == 0 || len(rs[0].Expressions) == 0 {
+		return nil, fmt.Errorf("empty result set")
+	}
+
+	result, ok := rs[0].Expressions[0].Value.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("unexpected result type %T", rs[0].Expressions[0].Value)
+	}
+	return result, nil
+}
+
+func loadStore(regoDir string) (storage.Store, error) {
 	dataPath := filepath.Join(regoDir, "data.json")
 	raw, err := os.ReadFile(dataPath)
 	if err != nil {
@@ -33,116 +239,31 @@ func New(regoDir string) (*Engine, error) {
 		return nil, fmt.Errorf("policy: parse data.json: %w", err)
 	}
 
-	store := inmem.NewFromObject(data)
-	return &Engine{regoDir: regoDir, store: store}, nil
+	return inmem.NewFromObject(data), nil
 }
 
-// Evaluate runs the admission policy against the provided input and returns
-// the verdict, reason, and file_action.
-func (e *Engine) Evaluate(ctx context.Context, input AdmissionInput) (*AdmissionOutput, error) {
-	modules, err := e.loadModules()
+func readModules(regoDir string) (map[string]string, error) {
+	pattern := filepath.Join(regoDir, "*.rego")
+	matches, err := filepath.Glob(pattern)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("policy: glob rego files: %w", err)
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("policy: no .rego files found in %s", regoDir)
 	}
 
-	inputMap, err := toMap(input)
-	if err != nil {
-		return nil, fmt.Errorf("policy: marshal input: %w", err)
-	}
-
-	opts := []func(*rego.Rego){
-		rego.Query("data.defenseclaw.admission"),
-		rego.Store(e.store),
-		rego.Input(inputMap),
-	}
-	for name, src := range modules {
-		opts = append(opts, rego.Module(name, src))
-	}
-
-	rs, err := rego.New(opts...).Eval(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("policy: eval: %w", err)
-	}
-
-	if len(rs) == 0 || len(rs[0].Expressions) == 0 {
-		return nil, fmt.Errorf("policy: empty result set")
-	}
-
-	result, ok := rs[0].Expressions[0].Value.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("policy: unexpected result type %T", rs[0].Expressions[0].Value)
-	}
-
-	out := &AdmissionOutput{
-		Verdict:    stringVal(result, "verdict"),
-		Reason:     stringVal(result, "reason"),
-		FileAction: stringVal(result, "file_action"),
-	}
-	return out, nil
-}
-
-// EvaluateGuardrail runs the LLM guardrail policy against combined scanner results.
-func (e *Engine) EvaluateGuardrail(ctx context.Context, input GuardrailInput) (*GuardrailOutput, error) {
-	modules, err := e.loadModules()
-	if err != nil {
-		return nil, err
-	}
-
-	inputMap, err := toMap(input)
-	if err != nil {
-		return nil, fmt.Errorf("policy: marshal guardrail input: %w", err)
-	}
-
-	opts := []func(*rego.Rego){
-		rego.Query("data.defenseclaw.guardrail"),
-		rego.Store(e.store),
-		rego.Input(inputMap),
-	}
-	for name, src := range modules {
-		opts = append(opts, rego.Module(name, src))
-	}
-
-	rs, err := rego.New(opts...).Eval(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("policy: guardrail eval: %w", err)
-	}
-
-	if len(rs) == 0 || len(rs[0].Expressions) == 0 {
-		return nil, fmt.Errorf("policy: guardrail empty result set")
-	}
-
-	result, ok := rs[0].Expressions[0].Value.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("policy: guardrail unexpected result type %T", rs[0].Expressions[0].Value)
-	}
-
-	sources := []string{}
-	if raw, ok := result["scanner_sources"]; ok {
-		if arr, ok := raw.([]interface{}); ok {
-			for _, v := range arr {
-				if s, ok := v.(string); ok {
-					sources = append(sources, s)
-				}
-			}
+	modules := make(map[string]string, len(matches))
+	for _, path := range matches {
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil, fmt.Errorf("policy: read %s: %w", path, readErr)
 		}
+		modules[filepath.Base(path)] = string(raw)
 	}
-
-	return &GuardrailOutput{
-		Action:         stringVal(result, "action"),
-		Severity:       stringVal(result, "severity"),
-		Reason:         stringVal(result, "reason"),
-		ScannerSources: sources,
-	}, nil
+	return modules, nil
 }
 
-// Compile performs a one-time compilation check of the Rego modules,
-// useful for fast-failing at startup.
-func (e *Engine) Compile() error {
-	modules, err := e.loadModules()
-	if err != nil {
-		return err
-	}
-
+func compileModules(modules map[string]string) error {
 	parsed := make(map[string]*ast.Module, len(modules))
 	for name, src := range modules {
 		mod, parseErr := ast.ParseModuleWithOpts(name, src, ast.ParserOptions{RegoVersion: ast.RegoV1})
@@ -158,27 +279,6 @@ func (e *Engine) Compile() error {
 		return fmt.Errorf("policy: compile: %v", compiler.Errors)
 	}
 	return nil
-}
-
-func (e *Engine) loadModules() (map[string]string, error) {
-	pattern := filepath.Join(e.regoDir, "*.rego")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, fmt.Errorf("policy: glob rego files: %w", err)
-	}
-	if len(matches) == 0 {
-		return nil, fmt.Errorf("policy: no .rego files found in %s", e.regoDir)
-	}
-
-	modules := make(map[string]string, len(matches))
-	for _, path := range matches {
-		raw, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return nil, fmt.Errorf("policy: read %s: %w", path, readErr)
-		}
-		modules[filepath.Base(path)] = string(raw)
-	}
-	return modules, nil
 }
 
 func toMap(v interface{}) (map[string]interface{}, error) {
@@ -203,4 +303,38 @@ func stringVal(m map[string]interface{}, key string) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return s
+}
+
+func boolVal(m map[string]interface{}, key string) bool {
+	v, ok := m[key]
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return false
+	}
+	return b
+}
+
+func toStringSlice(m map[string]interface{}, key string) []string {
+	raw, ok := m[key]
+	if !ok {
+		return nil
+	}
+
+	switch v := raw.(type) {
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []string:
+		return v
+	default:
+		return nil
+	}
 }

@@ -29,6 +29,38 @@ skill_actions:
     runtime: enable
     install: none
 
+scanner_overrides: {}
+
+guardrail:
+  block_threshold: 4
+  alert_threshold: 3
+  cisco_trust_level: advisory
+  patterns:
+    injection:
+      - "ignore previous"
+      - "jailbreak"
+      - "do anything now"
+      - "dan mode"
+    secrets:
+      - "-----begin private"
+      - "-----begin openssh"
+      - "aws_secret_access"
+    exfiltration:
+      - "/etc/shadow"
+      - "exfiltrate"
+  severity_mappings:
+    injection: HIGH
+    secrets: MEDIUM
+    exfiltration: HIGH
+
+firewall:
+  default_action: allow
+  blocked_destinations:
+    - "169.254.169.254"
+    - "fd00:ec2::254"
+  allowed_domains: []
+  allowed_ports: []
+
 enforcement:
   update_sandbox_policy: false
   max_enforcement_delay_seconds: 5

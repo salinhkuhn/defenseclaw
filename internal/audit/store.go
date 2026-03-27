@@ -192,10 +192,11 @@ func (s *Store) LogEvent(e Event) error {
 		e.Actor = "defenseclaw"
 	}
 
+	ts := e.Timestamp.Format(time.RFC3339Nano)
 	_, err := s.db.Exec(
 		`INSERT INTO audit_events (id, timestamp, action, target, actor, details, severity)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		e.ID, e.Timestamp, e.Action, e.Target, e.Actor, e.Details, e.Severity,
+		e.ID, ts, e.Action, e.Target, e.Actor, e.Details, e.Severity,
 	)
 	if err != nil {
 		return fmt.Errorf("audit: log event: %w", err)
@@ -526,7 +527,7 @@ func (s *Store) ListAlerts(limit int) ([]Event, error) {
 	rows, err := s.db.Query(
 		`SELECT id, timestamp, action, target, actor, details, severity
 		 FROM audit_events
-		 WHERE severity IN ('CRITICAL','HIGH','MEDIUM','LOW','ERROR')
+		 WHERE severity IN ('CRITICAL','HIGH','MEDIUM','LOW','ERROR','INFO')
 		   AND action NOT LIKE 'dismiss%'
 		 ORDER BY timestamp DESC LIMIT ?`, limit,
 	)

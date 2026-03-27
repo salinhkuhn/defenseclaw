@@ -9,23 +9,54 @@
   "actions": {
     "CRITICAL": {
       "runtime": "block",
-      "file": "quarantine"
+      "file": "quarantine",
+      "install": "block"
     },
     "HIGH": {
       "runtime": "block",
-      "file": "quarantine"
+      "file": "quarantine",
+      "install": "block"
     },
     "MEDIUM": {
       "runtime": "allow",
-      "file": "none"
+      "file": "none",
+      "install": "none"
     },
     "LOW": {
       "runtime": "allow",
-      "file": "none"
+      "file": "none",
+      "install": "none"
     },
     "INFO": {
       "runtime": "allow",
-      "file": "none"
+      "file": "none",
+      "install": "none"
+    }
+  },
+  "scanner_overrides": {
+    "mcp": {
+      "MEDIUM": {
+        "runtime": "block",
+        "file": "quarantine",
+        "install": "block"
+      },
+      "LOW": {
+        "runtime": "block",
+        "file": "none",
+        "install": "none"
+      }
+    },
+    "plugin": {
+      "HIGH": {
+        "runtime": "block",
+        "file": "quarantine",
+        "install": "block"
+      },
+      "MEDIUM": {
+        "runtime": "block",
+        "file": "quarantine",
+        "install": "block"
+      }
     }
   },
   "severity_ranking": {
@@ -47,10 +78,8 @@
       "fd00:ec2::254"
     ],
     "allowed_domains": [
-      "api.anthropic.com",
       "api.github.com",
       "github.com",
-      "objects.githubusercontent.com",
       "proxy.golang.org",
       "sum.golang.org",
       "registry.npmjs.org",
@@ -58,8 +87,7 @@
       "files.pythonhosted.org"
     ],
     "allowed_ports": [
-      443,
-      80
+      443
     ]
   },
   "sandbox": {
@@ -74,8 +102,8 @@
       "HIGH": 3,
       "CRITICAL": 4
     },
-    "block_threshold": 3,
-    "alert_threshold": 2,
+    "block_threshold": 2,
+    "alert_threshold": 1,
     "cisco_trust_level": "full",
     "patterns": {
       "injection": [

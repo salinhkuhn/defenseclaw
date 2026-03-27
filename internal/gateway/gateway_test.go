@@ -2333,6 +2333,205 @@ func TestAPIPolicyEvaluateFallback(t *testing.T) {
 	}
 }
 
+func TestAPIPolicyEvaluate_OTelMetrics_BlockedVerdict(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	reader := sdkmetric.NewManualReader()
+	otelProvider, err := telemetry.NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer otelProvider.Shutdown(context.Background())
+
+	api := &APIServer{health: NewSidecarHealth(), store: store, logger: logger}
+	api.SetOTelProvider(otelProvider)
+
+	if err := store.SetActionField("skill", "evil-skill", "install", "block", "malicious"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{
+		"domain":"admission",
+		"input":{
+			"target_type":"skill",
+			"target_name":"evil-skill",
+			"path":"/tmp/evil-skill"
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/policy/evaluate", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handlePolicyEvaluate(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", w.Result().StatusCode, http.StatusOK, w.Body.String())
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	evalMetric := findMetric(rm, "defenseclaw.policy.evaluations")
+	if evalMetric == nil {
+		t.Fatal("expected defenseclaw.policy.evaluations metric after blocked admission")
+	}
+	evalSum, ok := evalMetric.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("expected Sum[int64], got %T", evalMetric.Data)
+	}
+	blockedVal := counterByAttr(evalSum, "policy.verdict", "blocked")
+	if blockedVal != 1 {
+		t.Errorf("policy evaluations blocked = %d, want 1", blockedVal)
+	}
+	domainVal := counterByAttr(evalSum, "policy.domain", "admission")
+	if domainVal == 0 {
+		t.Error("expected policy.domain=admission attribute on counter")
+	}
+
+	latencyMetric := findMetric(rm, "defenseclaw.policy.latency")
+	if latencyMetric == nil {
+		t.Fatal("expected defenseclaw.policy.latency metric after admission evaluation")
+	}
+	latHist, ok := latencyMetric.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", latencyMetric.Data)
+	}
+	if len(latHist.DataPoints) == 0 {
+		t.Fatal("expected at least one histogram data point for policy latency")
+	}
+}
+
+func TestAPIPolicyEvaluate_OTelMetrics_RejectedVerdict(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	reader := sdkmetric.NewManualReader()
+	otelProvider, err := telemetry.NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer otelProvider.Shutdown(context.Background())
+
+	api := &APIServer{health: NewSidecarHealth(), store: store, logger: logger}
+	api.SetOTelProvider(otelProvider)
+
+	body := []byte(`{
+		"domain":"admission",
+		"input":{
+			"target_type":"skill",
+			"target_name":"new-skill",
+			"path":"/tmp/new-skill",
+			"scan_result":{"max_severity":"CRITICAL","total_findings":5}
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/policy/evaluate", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handlePolicyEvaluate(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", w.Result().StatusCode, http.StatusOK, w.Body.String())
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	evalMetric := findMetric(rm, "defenseclaw.policy.evaluations")
+	if evalMetric == nil {
+		t.Fatal("expected defenseclaw.policy.evaluations metric after rejected admission")
+	}
+	evalSum, ok := evalMetric.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("expected Sum[int64], got %T", evalMetric.Data)
+	}
+	rejectedVal := counterByAttr(evalSum, "policy.verdict", "rejected")
+	if rejectedVal != 1 {
+		t.Errorf("policy evaluations rejected = %d, want 1", rejectedVal)
+	}
+}
+
+func TestAPIPolicyReload_OTelMetrics_Success(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	reader := sdkmetric.NewManualReader()
+	otelProvider, err := telemetry.NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer otelProvider.Shutdown(context.Background())
+
+	policyDir := t.TempDir()
+	os.WriteFile(filepath.Join(policyDir, "data.json"), []byte(`{}`), 0o644)
+	os.WriteFile(filepath.Join(policyDir, "admission.rego"), []byte("package defenseclaw.admission\ndefault verdict = \"scan\"\n"), 0o644)
+
+	scanCfg := &config.Config{PolicyDir: policyDir}
+	api := &APIServer{health: NewSidecarHealth(), store: store, logger: logger, scannerCfg: scanCfg}
+	api.SetOTelProvider(otelProvider)
+
+	req := httptest.NewRequest(http.MethodPost, "/policy/reload", nil)
+	w := httptest.NewRecorder()
+	api.handlePolicyReload(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", w.Result().StatusCode, http.StatusOK, w.Body.String())
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	reloadMetric := findMetric(rm, "defenseclaw.policy.reloads")
+	if reloadMetric == nil {
+		t.Fatal("expected defenseclaw.policy.reloads metric after successful reload")
+	}
+	reloadSum, ok := reloadMetric.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("expected Sum[int64], got %T", reloadMetric.Data)
+	}
+	successVal := counterByAttr(reloadSum, "policy.status", "success")
+	if successVal != 1 {
+		t.Errorf("policy reloads success = %d, want 1", successVal)
+	}
+}
+
+func TestAPIPolicyReload_OTelMetrics_Failed(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	reader := sdkmetric.NewManualReader()
+	otelProvider, err := telemetry.NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer otelProvider.Shutdown(context.Background())
+
+	scanCfg := &config.Config{PolicyDir: "/nonexistent/policy/dir"}
+	api := &APIServer{health: NewSidecarHealth(), store: store, logger: logger, scannerCfg: scanCfg}
+	api.SetOTelProvider(otelProvider)
+
+	req := httptest.NewRequest(http.MethodPost, "/policy/reload", nil)
+	w := httptest.NewRecorder()
+	api.handlePolicyReload(w, req)
+
+	if w.Result().StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Result().StatusCode, http.StatusInternalServerError)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	reloadMetric := findMetric(rm, "defenseclaw.policy.reloads")
+	if reloadMetric == nil {
+		t.Fatal("expected defenseclaw.policy.reloads metric after failed reload")
+	}
+	reloadSum, ok := reloadMetric.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("expected Sum[int64], got %T", reloadMetric.Data)
+	}
+	failedVal := counterByAttr(reloadSum, "policy.status", "failed")
+	if failedVal != 1 {
+		t.Errorf("policy reloads failed = %d, want 1", failedVal)
+	}
+}
+
 func TestAPIServerRun(t *testing.T) {
 	health := NewSidecarHealth()
 	api := NewAPIServer("127.0.0.1:0", health, nil, nil, nil)

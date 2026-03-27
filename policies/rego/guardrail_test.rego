@@ -3,7 +3,12 @@ package defenseclaw.guardrail_test
 import data.defenseclaw.guardrail
 import rego.v1
 
-# --- Test data wired via data.guardrail in data.json ---
+_guardrail_data := {
+	"severity_rank": {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4},
+	"block_threshold": 3,
+	"alert_threshold": 2,
+	"cisco_trust_level": "full",
+}
 
 test_allow_when_no_findings if {
 	result := guardrail with input as {
@@ -15,6 +20,7 @@ test_allow_when_no_findings if {
 		"cisco_result": null,
 		"content_length": 100,
 	}
+		with data.guardrail as _guardrail_data
 
 	result.action == "allow"
 	result.severity == "NONE"
@@ -30,6 +36,7 @@ test_block_on_high_local if {
 		"cisco_result": null,
 		"content_length": 200,
 	}
+		with data.guardrail as _guardrail_data
 
 	result.action == "block"
 	result.severity == "HIGH"
@@ -45,6 +52,7 @@ test_alert_on_medium_local if {
 		"cisco_result": null,
 		"content_length": 150,
 	}
+		with data.guardrail as _guardrail_data
 
 	result.action == "alert"
 	result.severity == "MEDIUM"
@@ -60,6 +68,7 @@ test_observe_mode_never_blocks if {
 		"cisco_result": null,
 		"content_length": 200,
 	}
+		with data.guardrail as _guardrail_data
 
 	result.action == "alert"
 	result.severity == "HIGH"
@@ -120,6 +129,7 @@ test_cisco_only_block if {
 		"cisco_result": {"action": "block", "severity": "HIGH", "findings": ["Prompt Injection"], "reason": "cisco: Prompt Injection"},
 		"content_length": 300,
 	}
+		with data.guardrail as _guardrail_data
 
 	result.action == "block"
 	result.severity == "HIGH"
@@ -135,6 +145,7 @@ test_both_mode_cisco_escalates if {
 		"cisco_result": {"action": "block", "severity": "HIGH", "findings": ["SECURITY_VIOLATION"], "reason": "cisco: SECURITY_VIOLATION"},
 		"content_length": 400,
 	}
+		with data.guardrail as _guardrail_data
 
 	result.action == "block"
 	result.severity == "HIGH"
@@ -150,6 +161,7 @@ test_both_mode_combined_reasons if {
 		"cisco_result": {"action": "block", "severity": "HIGH", "findings": ["Data Leak"], "reason": "cisco: Data Leak"},
 		"content_length": 500,
 	}
+		with data.guardrail as _guardrail_data
 
 	result.severity == "HIGH"
 	result.action == "block"
@@ -167,7 +179,7 @@ test_advisory_cisco_downgrades_to_alert if {
 		"cisco_result": {"action": "block", "severity": "HIGH", "findings": ["Prompt Injection"], "reason": "cisco: Prompt Injection"},
 		"content_length": 300,
 	}
-		with data.guardrail.cisco_trust_level as "advisory"
+		with data.guardrail as object.union(_guardrail_data, {"cisco_trust_level": "advisory"})
 
 	result.action == "alert"
 }
@@ -182,6 +194,7 @@ test_scanner_sources_populated if {
 		"cisco_result": {"action": "block", "severity": "HIGH", "findings": ["Prompt Injection"], "reason": "cisco: Prompt Injection"},
 		"content_length": 500,
 	}
+		with data.guardrail as _guardrail_data
 
 	"local-pattern" in result.scanner_sources
 	"ai-defense" in result.scanner_sources
@@ -198,7 +211,7 @@ test_cisco_trust_none_ignores_cisco if {
 		"cisco_result": {"action": "block", "severity": "HIGH", "findings": ["Prompt Injection"], "reason": "cisco: Prompt Injection"},
 		"content_length": 300,
 	}
-		with data.guardrail.cisco_trust_level as "none"
+		with data.guardrail as object.union(_guardrail_data, {"cisco_trust_level": "none"})
 
 	result.action == "allow"
 	result.severity == "NONE"

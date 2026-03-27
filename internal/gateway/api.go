@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/defenseclaw/defenseclaw/internal/audit"
 	"github.com/defenseclaw/defenseclaw/internal/config"
 	"github.com/defenseclaw/defenseclaw/internal/enforce"
@@ -80,6 +82,11 @@ func (a *APIServer) Run(ctx context.Context) error {
 	mux.HandleFunc("/alerts", a.handleAlerts)
 	mux.HandleFunc("/audit/event", a.handleAuditEvent)
 	mux.HandleFunc("/policy/evaluate", a.handlePolicyEvaluate)
+	mux.HandleFunc("/policy/evaluate/firewall", a.handlePolicyEvaluateFirewall)
+	mux.HandleFunc("/policy/evaluate/sandbox", a.handlePolicyEvaluateSandbox)
+	mux.HandleFunc("/policy/evaluate/audit", a.handlePolicyEvaluateAudit)
+	mux.HandleFunc("/policy/evaluate/skill-actions", a.handlePolicyEvaluateSkillActions)
+	mux.HandleFunc("/policy/reload", a.handlePolicyReload)
 	mux.HandleFunc("/skills", a.handleSkills)
 	mux.HandleFunc("/mcps", a.handleMCPs)
 	mux.HandleFunc("/tools/catalog", a.handleToolsCatalog)
@@ -606,6 +613,13 @@ func (a *APIServer) handlePolicyEvaluate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	start := time.Now()
+	ctx := r.Context()
+	var span trace.Span
+	if a.otel != nil {
+		ctx, span = a.otel.StartPolicySpan(ctx, "admission", req.Input.TargetType, req.Input.TargetName)
+	}
+
 	input := policy.AdmissionInput{
 		TargetType: req.Input.TargetType,
 		TargetName: req.Input.TargetName,
@@ -620,11 +634,19 @@ func (a *APIServer) handlePolicyEvaluate(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	out, err := a.evaluateAdmissionPolicy(r.Context(), input)
+	out, err := a.evaluateAdmissionPolicy(ctx, input)
 	if err != nil {
 		a.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
+
+	if a.otel != nil {
+		a.otel.EndPolicySpan(span, "admission", out.Verdict, out.Reason, start)
+		if out.Verdict == "blocked" || out.Verdict == "rejected" {
+			a.otel.EmitPolicyDecision("admission", out.Verdict, req.Input.TargetName, req.Input.TargetType, out.Reason, nil)
+		}
+	}
+
 	a.writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "data": out})
 }
 
@@ -1361,6 +1383,262 @@ func classifyScanError(err error) string {
 	default:
 		return "crash"
 	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /policy/evaluate/firewall
+// ---------------------------------------------------------------------------
+
+func (a *APIServer) handlePolicyEvaluateFirewall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var input policy.FirewallInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if input.Destination == "" {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "destination is required"})
+		return
+	}
+
+	start := time.Now()
+	ctx := r.Context()
+	var span trace.Span
+	if a.otel != nil {
+		ctx, span = a.otel.StartPolicySpan(ctx, "firewall", "network", input.Destination)
+	}
+
+	engine, err := a.loadPolicyEngine()
+	if err != nil {
+		a.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+
+	out, err := engine.EvaluateFirewall(ctx, input)
+	if err != nil {
+		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if a.otel != nil {
+		a.otel.EndPolicySpan(span, "firewall", out.Action, out.RuleName, start)
+		if out.Action == "deny" || out.Action == "block" {
+			a.otel.EmitPolicyDecision("firewall", out.Action, input.Destination, "network", out.RuleName, nil)
+		}
+	}
+
+	a.writeJSON(w, http.StatusOK, out)
+}
+
+// ---------------------------------------------------------------------------
+// POST /policy/evaluate/sandbox
+// ---------------------------------------------------------------------------
+
+func (a *APIServer) handlePolicyEvaluateSandbox(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var input policy.SandboxInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if input.SkillName == "" {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "skill_name is required"})
+		return
+	}
+
+	start := time.Now()
+	ctx := r.Context()
+	var span trace.Span
+	if a.otel != nil {
+		ctx, span = a.otel.StartPolicySpan(ctx, "sandbox", "skill", input.SkillName)
+	}
+
+	engine, err := a.loadPolicyEngine()
+	if err != nil {
+		a.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+
+	out, err := engine.EvaluateSandbox(ctx, input)
+	if err != nil {
+		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if a.otel != nil {
+		verdict := "allow"
+		if len(out.DeniedEndpoints) > 0 || len(out.DeniedFromRequest) > 0 {
+			verdict = "restrict"
+		}
+		a.otel.EndPolicySpan(span, "sandbox", verdict, "", start)
+	}
+
+	a.writeJSON(w, http.StatusOK, out)
+}
+
+// ---------------------------------------------------------------------------
+// POST /policy/evaluate/audit
+// ---------------------------------------------------------------------------
+
+func (a *APIServer) handlePolicyEvaluateAudit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var input policy.AuditInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+
+	start := time.Now()
+	ctx := r.Context()
+	var span trace.Span
+	if a.otel != nil {
+		ctx, span = a.otel.StartPolicySpan(ctx, "audit", input.EventType, input.Severity)
+	}
+
+	engine, err := a.loadPolicyEngine()
+	if err != nil {
+		a.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+
+	out, err := engine.EvaluateAudit(ctx, input)
+	if err != nil {
+		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if a.otel != nil {
+		verdict := "expire"
+		if out.Retain {
+			verdict = "retain"
+		}
+		a.otel.EndPolicySpan(span, "audit", verdict, out.RetainReason, start)
+	}
+
+	a.writeJSON(w, http.StatusOK, out)
+}
+
+// ---------------------------------------------------------------------------
+// POST /policy/evaluate/skill-actions
+// ---------------------------------------------------------------------------
+
+func (a *APIServer) handlePolicyEvaluateSkillActions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var input policy.SkillActionsInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if input.Severity == "" {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "severity is required"})
+		return
+	}
+
+	start := time.Now()
+	ctx := r.Context()
+	var span trace.Span
+	if a.otel != nil {
+		ctx, span = a.otel.StartPolicySpan(ctx, "skill-actions", input.TargetType, input.Severity)
+	}
+
+	engine, err := a.loadPolicyEngine()
+	if err != nil {
+		a.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+
+	out, err := engine.EvaluateSkillActions(ctx, input)
+	if err != nil {
+		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if a.otel != nil {
+		verdict := out.RuntimeAction
+		if out.ShouldBlock {
+			verdict = "block"
+		}
+		a.otel.EndPolicySpan(span, "skill-actions", verdict, "", start)
+	}
+
+	a.writeJSON(w, http.StatusOK, out)
+}
+
+// ---------------------------------------------------------------------------
+// POST /policy/reload — hot-reload OPA engine from disk
+// ---------------------------------------------------------------------------
+
+func (a *APIServer) handlePolicyReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if a.scannerCfg == nil || a.scannerCfg.PolicyDir == "" {
+		a.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "policy_dir not configured"})
+		return
+	}
+
+	engine, err := policy.New(a.scannerCfg.PolicyDir)
+	if err != nil {
+		if a.otel != nil {
+			a.otel.RecordPolicyReload(r.Context(), "failed")
+		}
+		a.writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error":  "reload failed: " + err.Error(),
+			"status": "failed",
+		})
+		return
+	}
+
+	if err := engine.Compile(); err != nil {
+		if a.otel != nil {
+			a.otel.RecordPolicyReload(r.Context(), "failed")
+		}
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error":  "compilation failed: " + err.Error(),
+			"status": "failed",
+		})
+		return
+	}
+
+	if a.otel != nil {
+		a.otel.RecordPolicyReload(r.Context(), "success")
+		a.otel.EmitPolicyDecision("reload", "success", a.scannerCfg.PolicyDir, "", "OPA policy reloaded via API", nil)
+	}
+
+	if a.logger != nil {
+		_ = a.logger.LogAction("policy-reload", a.scannerCfg.PolicyDir, "OPA policy reloaded via API")
+	}
+
+	a.writeJSON(w, http.StatusOK, map[string]string{
+		"status":     "reloaded",
+		"policy_dir": a.scannerCfg.PolicyDir,
+	})
+}
+
+// loadPolicyEngine creates a fresh policy engine from the configured policy_dir.
+func (a *APIServer) loadPolicyEngine() (*policy.Engine, error) {
+	if a.scannerCfg == nil || a.scannerCfg.PolicyDir == "" {
+		return nil, fmt.Errorf("policy_dir not configured")
+	}
+	return policy.New(a.scannerCfg.PolicyDir)
 }
 
 func findPolicyListEntry(entries []policy.ListEntry, targetType, targetName string) (bool, string) {

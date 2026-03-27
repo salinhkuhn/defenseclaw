@@ -244,7 +244,7 @@ func (s *Sidecar) runWatcher(ctx context.Context) error {
 		}
 	}
 
-	w := watcher.New(s.cfg, skillDirs, pluginDirs, s.store, s.logger, s.shell, opa, func(r watcher.AdmissionResult) {
+	w := watcher.New(s.cfg, skillDirs, pluginDirs, s.store, s.logger, s.shell, opa, s.otel, func(r watcher.AdmissionResult) {
 		s.handleAdmissionResult(r)
 	})
 	if s.otel != nil {

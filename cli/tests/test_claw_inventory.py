@@ -776,7 +776,7 @@ class TestBuildSummaryUnit(unittest.TestCase):
     def test_with_data(self):
         inv = {
             "skills": [{"eligible": True}, {"eligible": False}],
-            "plugins": [{"enabled": True}, {"enabled": False}],
+            "plugins": [{"status": "loaded", "enabled": True}, {"enabled": False}],
             "mcp": [{}],
             "agents": [{}],
             "tools": [{}, {}],

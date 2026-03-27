@@ -14,8 +14,9 @@ test_blocked_skill if {
 		"block_list": [{"target_type": "skill", "target_name": "evil-skill", "reason": "malware"}],
 		"allow_list": [],
 	}
-		with data.config as {"allow_list_bypass_scan": true}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
 		with data.actions as {}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {}
 
 	result.verdict == "blocked"
@@ -29,8 +30,9 @@ test_blocked_reason if {
 		"block_list": [{"target_type": "mcp", "target_name": "bad-mcp", "reason": "vuln"}],
 		"allow_list": [],
 	}
-		with data.config as {"allow_list_bypass_scan": true}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
 		with data.actions as {}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {}
 
 	contains(result.reason, "block list")
@@ -44,8 +46,9 @@ test_not_blocked_different_name if {
 		"block_list": [{"target_type": "skill", "target_name": "other-skill", "reason": "x"}],
 		"allow_list": [],
 	}
-		with data.config as {"allow_list_bypass_scan": true}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
 		with data.actions as {}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {}
 
 	result.verdict != "blocked"
@@ -61,8 +64,9 @@ test_allowed_bypass_scan if {
 		"block_list": [],
 		"allow_list": [{"target_type": "skill", "target_name": "trusted-skill", "reason": "vendor"}],
 	}
-		with data.config as {"allow_list_bypass_scan": true}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
 		with data.actions as {}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {}
 
 	result.verdict == "allowed"
@@ -76,8 +80,44 @@ test_allowed_no_bypass_falls_through if {
 		"block_list": [],
 		"allow_list": [{"target_type": "skill", "target_name": "trusted-skill", "reason": "vendor"}],
 	}
-		with data.config as {"allow_list_bypass_scan": false}
+		with data.config as {"allow_list_bypass_scan": false, "scan_on_install": true}
 		with data.actions as {}
+		with data.scanner_overrides as {}
+		with data.severity_ranking as {}
+
+	result.verdict == "scan"
+}
+
+# --- scan_on_install disabled ---
+
+test_scan_on_install_false_allows_without_scan if {
+	result := admission with input as {
+		"target_type": "skill",
+		"target_name": "new-skill",
+		"path": "/tmp/new",
+		"block_list": [],
+		"allow_list": [],
+	}
+		with data.config as {"allow_list_bypass_scan": false, "scan_on_install": false}
+		with data.actions as {}
+		with data.scanner_overrides as {}
+		with data.severity_ranking as {}
+
+	result.verdict == "allowed"
+	contains(result.reason, "scan_on_install disabled")
+}
+
+test_scan_on_install_true_requires_scan if {
+	result := admission with input as {
+		"target_type": "skill",
+		"target_name": "new-skill",
+		"path": "/tmp/new",
+		"block_list": [],
+		"allow_list": [],
+	}
+		with data.config as {"allow_list_bypass_scan": false, "scan_on_install": true}
+		with data.actions as {}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {}
 
 	result.verdict == "scan"
@@ -94,8 +134,9 @@ test_clean_scan if {
 		"allow_list": [],
 		"scan_result": {"max_severity": "INFO", "total_findings": 0, "findings": []},
 	}
-		with data.config as {"allow_list_bypass_scan": true}
-		with data.actions as {"INFO": {"runtime": "allow", "file": "none"}}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
+		with data.actions as {"INFO": {"runtime": "allow", "file": "none", "install": "none"}}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {"INFO": 1}
 
 	result.verdict == "clean"
@@ -115,14 +156,17 @@ test_rejected_high if {
 			{"severity": "MEDIUM", "title": "vuln2", "scanner": "test"},
 		]},
 	}
-		with data.config as {"allow_list_bypass_scan": true}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
 		with data.actions as {
-			"HIGH": {"runtime": "block", "file": "quarantine"},
-			"MEDIUM": {"runtime": "allow", "file": "none"},
+			"HIGH": {"runtime": "block", "file": "quarantine", "install": "block"},
+			"MEDIUM": {"runtime": "allow", "file": "none", "install": "none"},
 		}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {"HIGH": 4, "MEDIUM": 3, "LOW": 2, "INFO": 1}
 
 	result.verdict == "rejected"
+	result.file_action == "quarantine"
+	result.install_action == "block"
 }
 
 # --- Warning (MEDIUM severity with default policy) ---
@@ -138,12 +182,13 @@ test_warning_medium if {
 			{"severity": "MEDIUM", "title": "minor-issue", "scanner": "test"},
 		]},
 	}
-		with data.config as {"allow_list_bypass_scan": true}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
 		with data.actions as {
-			"CRITICAL": {"runtime": "block", "file": "quarantine"},
-			"HIGH": {"runtime": "block", "file": "quarantine"},
-			"MEDIUM": {"runtime": "allow", "file": "none"},
+			"CRITICAL": {"runtime": "block", "file": "quarantine", "install": "block"},
+			"HIGH": {"runtime": "block", "file": "quarantine", "install": "block"},
+			"MEDIUM": {"runtime": "allow", "file": "none", "install": "none"},
 		}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3, "LOW": 2, "INFO": 1}
 
 	result.verdict == "warning"
@@ -159,8 +204,9 @@ test_default_scan_verdict if {
 		"block_list": [],
 		"allow_list": [],
 	}
-		with data.config as {"allow_list_bypass_scan": true}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
 		with data.actions as {}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {}
 
 	result.verdict == "scan"
@@ -176,11 +222,89 @@ test_block_overrides_allow if {
 		"block_list": [{"target_type": "skill", "target_name": "dual-listed", "reason": "banned"}],
 		"allow_list": [{"target_type": "skill", "target_name": "dual-listed", "reason": "trusted"}],
 	}
-		with data.config as {"allow_list_bypass_scan": true}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
 		with data.actions as {}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {}
 
 	result.verdict == "blocked"
+}
+
+# --- Per-scanner overrides: MCP blocked on MEDIUM ---
+
+test_scanner_override_mcp_medium_blocked if {
+	result := admission with input as {
+		"target_type": "mcp",
+		"target_name": "risky-mcp",
+		"path": "/tmp/mcp",
+		"block_list": [],
+		"allow_list": [],
+		"scan_result": {"max_severity": "MEDIUM", "total_findings": 1, "scanner_name": "mcp-scanner", "findings": [
+			{"severity": "MEDIUM", "title": "issue", "scanner": "mcp-scanner"},
+		]},
+	}
+		with data.config as {"allow_list_bypass_scan": false, "scan_on_install": true}
+		with data.actions as {
+			"MEDIUM": {"runtime": "allow", "file": "none", "install": "none"},
+		}
+		with data.scanner_overrides as {
+			"mcp": {"MEDIUM": {"runtime": "block", "file": "quarantine", "install": "block"}},
+		}
+		with data.severity_ranking as {"MEDIUM": 3}
+
+	result.verdict == "rejected"
+	result.file_action == "quarantine"
+	result.install_action == "block"
+}
+
+# --- Per-scanner overrides: skill uses global (no override) ---
+
+test_scanner_override_skill_uses_global if {
+	result := admission with input as {
+		"target_type": "skill",
+		"target_name": "med-skill",
+		"path": "/tmp/med",
+		"block_list": [],
+		"allow_list": [],
+		"scan_result": {"max_severity": "MEDIUM", "total_findings": 1, "findings": [
+			{"severity": "MEDIUM", "title": "issue", "scanner": "skill-scanner"},
+		]},
+	}
+		with data.config as {"allow_list_bypass_scan": false, "scan_on_install": true}
+		with data.actions as {
+			"MEDIUM": {"runtime": "allow", "file": "none", "install": "none"},
+		}
+		with data.scanner_overrides as {
+			"mcp": {"MEDIUM": {"runtime": "block", "file": "quarantine", "install": "block"}},
+		}
+		with data.severity_ranking as {"MEDIUM": 3}
+
+	result.verdict == "warning"
+}
+
+# --- Per-scanner overrides: plugin stricter than global ---
+
+test_scanner_override_plugin_high_blocked if {
+	result := admission with input as {
+		"target_type": "plugin",
+		"target_name": "risky-plugin",
+		"path": "/tmp/plugin",
+		"block_list": [],
+		"allow_list": [],
+		"scan_result": {"max_severity": "HIGH", "total_findings": 1, "findings": [
+			{"severity": "HIGH", "title": "vuln", "scanner": "plugin-scanner"},
+		]},
+	}
+		with data.config as {"allow_list_bypass_scan": false, "scan_on_install": true}
+		with data.actions as {
+			"HIGH": {"runtime": "allow", "file": "none", "install": "none"},
+		}
+		with data.scanner_overrides as {
+			"plugin": {"HIGH": {"runtime": "block", "file": "quarantine", "install": "block"}},
+		}
+		with data.severity_ranking as {"HIGH": 4}
+
+	result.verdict == "rejected"
 }
 
 # --- Strict policy: MEDIUM triggers reject ---
@@ -196,8 +320,9 @@ test_strict_medium_rejected if {
 			{"severity": "MEDIUM", "title": "issue", "scanner": "test"},
 		]},
 	}
-		with data.config as {"allow_list_bypass_scan": false, "policy_name": "strict"}
-		with data.actions as {"MEDIUM": {"runtime": "block", "file": "quarantine"}}
+		with data.config as {"allow_list_bypass_scan": false, "scan_on_install": true, "policy_name": "strict"}
+		with data.actions as {"MEDIUM": {"runtime": "block", "file": "quarantine", "install": "block"}}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {"MEDIUM": 3, "LOW": 2, "INFO": 1}
 
 	result.verdict == "rejected"
@@ -216,8 +341,9 @@ test_permissive_high_warning if {
 			{"severity": "HIGH", "title": "issue", "scanner": "test"},
 		]},
 	}
-		with data.config as {"allow_list_bypass_scan": true, "policy_name": "permissive"}
-		with data.actions as {"HIGH": {"runtime": "allow", "file": "none"}}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true, "policy_name": "permissive"}
+		with data.actions as {"HIGH": {"runtime": "allow", "file": "none", "install": "none"}}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {"HIGH": 4, "MEDIUM": 3, "LOW": 2, "INFO": 1}
 
 	result.verdict == "warning"
@@ -233,8 +359,9 @@ test_plugin_blocked if {
 		"block_list": [{"target_type": "plugin", "target_name": "evil-plugin", "reason": "malicious"}],
 		"allow_list": [],
 	}
-		with data.config as {"allow_list_bypass_scan": true}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
 		with data.actions as {}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {}
 
 	result.verdict == "blocked"
@@ -248,8 +375,9 @@ test_plugin_allowed if {
 		"block_list": [],
 		"allow_list": [{"target_type": "plugin", "target_name": "trusted-plugin", "reason": "vendor"}],
 	}
-		with data.config as {"allow_list_bypass_scan": true}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
 		with data.actions as {}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {}
 
 	result.verdict == "allowed"
@@ -266,12 +394,14 @@ test_plugin_rejected_critical if {
 			{"severity": "CRITICAL", "title": "credential theft", "scanner": "plugin-scanner"},
 		]},
 	}
-		with data.config as {"allow_list_bypass_scan": true}
-		with data.actions as {"CRITICAL": {"runtime": "block", "file": "quarantine"}}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
+		with data.actions as {"CRITICAL": {"runtime": "block", "file": "quarantine", "install": "block"}}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3}
 
 	result.verdict == "rejected"
 	result.file_action == "quarantine"
+	result.install_action == "block"
 }
 
 test_plugin_clean_scan if {
@@ -283,8 +413,9 @@ test_plugin_clean_scan if {
 		"allow_list": [],
 		"scan_result": {"max_severity": "INFO", "total_findings": 0, "findings": []},
 	}
-		with data.config as {"allow_list_bypass_scan": true}
-		with data.actions as {"INFO": {"runtime": "allow", "file": "none"}}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
+		with data.actions as {"INFO": {"runtime": "allow", "file": "none", "install": "none"}}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {"INFO": 1}
 
 	result.verdict == "clean"
@@ -301,12 +432,13 @@ test_plugin_warning_medium if {
 			{"severity": "MEDIUM", "title": "minor perm", "scanner": "plugin-scanner"},
 		]},
 	}
-		with data.config as {"allow_list_bypass_scan": true}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
 		with data.actions as {
-			"CRITICAL": {"runtime": "block", "file": "quarantine"},
-			"HIGH": {"runtime": "block", "file": "quarantine"},
-			"MEDIUM": {"runtime": "allow", "file": "none"},
+			"CRITICAL": {"runtime": "block", "file": "quarantine", "install": "block"},
+			"HIGH": {"runtime": "block", "file": "quarantine", "install": "block"},
+			"MEDIUM": {"runtime": "allow", "file": "none", "install": "none"},
 		}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3}
 
 	result.verdict == "warning"
@@ -320,8 +452,9 @@ test_plugin_not_cross_matched_with_skill if {
 		"block_list": [{"target_type": "skill", "target_name": "my-plugin", "reason": "wrong type"}],
 		"allow_list": [],
 	}
-		with data.config as {"allow_list_bypass_scan": true}
+		with data.config as {"allow_list_bypass_scan": true, "scan_on_install": true}
 		with data.actions as {}
+		with data.scanner_overrides as {}
 		with data.severity_ranking as {}
 
 	result.verdict != "blocked"
@@ -392,4 +525,59 @@ test_production_max_enforcement_delay_is_two if {
 
 test_production_audit_retention_at_least_90 if {
 	data.audit.retention_days >= 90
+}
+
+# --- install_action and file_action output ---
+
+test_install_action_block_on_critical if {
+	result := admission with input as {
+		"target_type": "skill",
+		"target_name": "bad-skill",
+		"path": "/tmp/bad",
+		"block_list": [],
+		"allow_list": [],
+		"scan_result": {"max_severity": "CRITICAL", "total_findings": 1, "findings": []},
+	}
+		with data.config as {"allow_list_bypass_scan": false, "scan_on_install": true}
+		with data.actions as {"CRITICAL": {"runtime": "block", "file": "quarantine", "install": "block"}}
+		with data.scanner_overrides as {}
+		with data.severity_ranking as {"CRITICAL": 5}
+
+	result.install_action == "block"
+	result.file_action == "quarantine"
+}
+
+test_install_action_none_on_warning if {
+	result := admission with input as {
+		"target_type": "skill",
+		"target_name": "ok-skill",
+		"path": "/tmp/ok",
+		"block_list": [],
+		"allow_list": [],
+		"scan_result": {"max_severity": "LOW", "total_findings": 1, "findings": []},
+	}
+		with data.config as {"allow_list_bypass_scan": false, "scan_on_install": true}
+		with data.actions as {"LOW": {"runtime": "allow", "file": "none", "install": "none"}}
+		with data.scanner_overrides as {}
+		with data.severity_ranking as {"LOW": 2}
+
+	result.install_action == "none"
+	result.file_action == "none"
+}
+
+test_no_scan_result_actions_default_none if {
+	result := admission with input as {
+		"target_type": "skill",
+		"target_name": "new-skill",
+		"path": "/tmp/new",
+		"block_list": [],
+		"allow_list": [],
+	}
+		with data.config as {"allow_list_bypass_scan": false, "scan_on_install": true}
+		with data.actions as {}
+		with data.scanner_overrides as {}
+		with data.severity_ranking as {}
+
+	result.file_action == "none"
+	result.install_action == "none"
 }
