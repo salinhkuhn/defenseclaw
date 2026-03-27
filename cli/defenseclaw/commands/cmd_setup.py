@@ -1831,22 +1831,22 @@ def _print_splunk_status(app: AppContext) -> None:
 
     if otel.enabled:
         click.echo("  Splunk Observability (OTLP):")
-        click.echo(f"    Status:      enabled")
+        click.echo("    Status:      enabled")
         if otel.traces.endpoint:
             realm = otel.traces.endpoint.replace("ingest.", "").replace(".observability.splunkcloud.com", "")
             click.echo(f"    Realm:       {realm}")
         if otel.traces.enabled:
             click.echo(f"    Traces:      {otel.traces.endpoint}{otel.traces.url_path}")
         else:
-            click.echo(f"    Traces:      disabled")
+            click.echo("    Traces:      disabled")
         if otel.metrics.enabled:
             click.echo(f"    Metrics:     {otel.metrics.endpoint}{otel.metrics.url_path}")
         else:
-            click.echo(f"    Metrics:     disabled")
+            click.echo("    Metrics:     disabled")
         if otel.logs.enabled:
             click.echo(f"    Logs:        {otel.logs.endpoint}{otel.logs.url_path}")
         else:
-            click.echo(f"    Logs:        disabled")
+            click.echo("    Logs:        disabled")
         dotenv_path = os.path.join(app.cfg.data_dir, ".env")
         dotenv = _load_dotenv(dotenv_path)
         svc = dotenv.get("OTEL_SERVICE_NAME", os.environ.get("OTEL_SERVICE_NAME", "defenseclaw"))
@@ -1855,7 +1855,7 @@ def _print_splunk_status(app: AppContext) -> None:
 
     if sc.enabled:
         click.echo("  Splunk Enterprise (HEC):")
-        click.echo(f"    Status:      enabled")
+        click.echo("    Status:      enabled")
         click.echo(f"    HEC:         {sc.hec_endpoint}")
         click.echo(f"    Index:       {sc.index}")
         click.echo(f"    Source:      {sc.source}")
