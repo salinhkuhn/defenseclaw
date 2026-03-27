@@ -34,6 +34,35 @@ Instructions are provided for both **NVIDIA DGX Spark** (aarch64/Ubuntu) and **m
 
 On **macOS**, OpenShell is not available. DefenseClaw still works for scanning, block/allow lists, audit logging, and the TUI dashboard. Sandbox enforcement is gracefully skipped.
 
+## Splunk Terms And Scope For The Local Preset
+
+If you enable the bundled local Splunk workflow through `DefenseClaw`, you are
+representing that you have reviewed and accepted the then-current Splunk
+General Terms, available at:
+
+- https://www.splunk.com/en_us/legal/splunk-general-terms.html
+
+If you have a separately negotiated agreement with Splunk that expressly
+supersedes those terms, that agreement governs instead. Otherwise, by
+accessing or using Splunk software through this workflow, you are agreeing to
+the Splunk General Terms posted at the time of access and use and
+acknowledging their applicability to the Splunk software.
+
+If you do not agree to the Splunk General Terms, do not download, start,
+access, or use the software.
+
+Scope guardrails for the local Splunk preset:
+
+- use it only for local, single-instance workflows
+- assume existing Splunk license limits still apply
+- do not treat it as an endorsed path to multi-instance or long-term
+  deployment
+- do not assume a seamless upgrade or migration path from this setup
+- do not assume all Splunk Enterprise capabilities are enabled in every license
+  mode
+- do not assume this local preset proxies or replaces a direct O11y
+  integration
+
 ---
 
 ## Building from Source

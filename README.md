@@ -239,9 +239,37 @@ export DEFENSECLAW_SPLUNK_HEC_TOKEN="your-hec-token"
 For local development, use the built-in preset:
 
 ```bash
-defenseclaw setup splunk-local --non-interactive
+defenseclaw setup splunk --logs --non-interactive
 ```
 
+By downloading or installing `DefenseClaw`, and by launching the bundled local
+Splunk bridge through this preset, local Splunk usage is subject to the
+Splunk General Terms and the local-mode scope guardrails documented in
+[docs/INSTALL.md](docs/INSTALL.md).
+
+That command also installs the local Splunk app automatically. The app gives
+users a purpose-built investigation surface for DefenseClaw audit activity,
+OpenClaw runtime evidence, diagnostics, metrics, traces, and saved searches.
+
+The local setup aligns the sidecar with this contract:
+
+- HEC endpoint `http://127.0.0.1:8088/services/collector/event`
+- index `defenseclaw_local`
+- source `defenseclaw`
+- sourcetype `defenseclaw:json`
+
+Recommended local flow:
+
+1. Run `defenseclaw setup splunk --logs --non-interactive`
+2. Start the DefenseClaw sidecar
+3. Open local Splunk with the URL and credentials printed by the setup command
+4. Validate events in local Splunk
+
+Scope guardrails for this local Splunk preset:
+See [docs/INSTALL.md](docs/INSTALL.md) for the full license and scope details.
+
+For the local Splunk app itself, including dashboard purpose, signal families,
+and investigation workflow, see [docs/SPLUNK_APP.md](docs/SPLUNK_APP.md).
 Events are batched (default 50) and flushed every 5 seconds. Each event includes OTEL-shaped fields with pre-computed Splunk CIM metadata for zero-transformation indexing.
 
 ### OTLP Export
