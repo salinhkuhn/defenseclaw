@@ -138,9 +138,15 @@ func DefaultConfig() *Config {
 					TakeAction: false,
 					Dirs:       []string{},
 				},
+				Plugin: GatewayWatcherPluginConfig{
+					Enabled:    true,
+					TakeAction: false,
+					Dirs:       []string{},
+				},
 			},
 		},
-		SkillActions:  DefaultSkillActions(),
-		MCPActions:    DefaultMCPActions(),
+		SkillActions:   DefaultSkillActions(),
+		MCPActions:     DefaultMCPActions(),
+		PluginActions:  DefaultPluginActions(),
 	}
 }

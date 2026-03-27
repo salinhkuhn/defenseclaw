@@ -1,0 +1,246 @@
+"""Registry utilities — fetch plugins from npm, clawhub://, or HTTP URLs.
+
+Provides source detection and download/extract helpers reusable by both
+``plugin install`` and any future registry-aware commands.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import tarfile
+import zipfile
+from enum import Enum
+from urllib.parse import quote as urlquote
+
+import requests
+
+MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MB safety cap
+DEFAULT_NPM_REGISTRY = "https://registry.npmjs.org"
+DOWNLOAD_TIMEOUT = 120
+METADATA_TIMEOUT = 30
+
+
+class SourceType(Enum):
+    LOCAL = "local"
+    NPM = "npm"
+    CLAWHUB = "clawhub"
+    HTTP = "http"
+
+
+class RegistryError(Exception):
+    """Raised when a registry fetch fails."""
+
+
+def detect_source(name_or_path: str) -> SourceType:
+    """Determine the install source from user input."""
+    if name_or_path.startswith("clawhub://"):
+        return SourceType.CLAWHUB
+    if name_or_path.startswith(("http://", "https://")):
+        return SourceType.HTTP
+    if os.path.isdir(name_or_path) or name_or_path.startswith(("/", "./")):
+        return SourceType.LOCAL
+    return SourceType.NPM
+
+
+def parse_clawhub_uri(uri: str) -> tuple[str, str | None]:
+    """Parse ``clawhub://name[@version]`` into (name, version_or_None)."""
+    path = uri.removeprefix("clawhub://")
+    if not path:
+        return ("", None)
+    if "@" in path:
+        name, version = path.split("@", 1)
+        return (name, version)
+    return (path, None)
+
+
+def _npm_metadata_url(package_name: str, version: str | None, registry_url: str) -> str:
+    """Build the npm registry metadata URL, handling scoped packages."""
+    tag = version or "latest"
+    if package_name.startswith("@"):
+        encoded = urlquote(package_name, safe="")
+        return f"{registry_url}/{encoded}/{tag}"
+    return f"{registry_url}/{package_name}/{tag}"
+
+
+def _stream_download(url: str, dest_path: str) -> None:
+    """Download a URL to *dest_path* with streaming and a size cap."""
+    resp = requests.get(url, timeout=DOWNLOAD_TIMEOUT, stream=True)
+    resp.raise_for_status()
+    total = 0
+    with open(dest_path, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=65536):
+            total += len(chunk)
+            if total > MAX_DOWNLOAD_BYTES:
+                raise RegistryError(
+                    f"download exceeds {MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB limit"
+                )
+            f.write(chunk)
+
+
+def _extract_archive(archive_path: str, dest_dir: str, *, prefix: str = "") -> None:
+    """Extract a tar.gz or zip archive into *dest_dir*.
+
+    If *prefix* is given (e.g. ``package/plugins/foo/``), only entries under
+    that prefix are extracted (tar only) with the prefix stripped.
+
+    Zip extraction includes path-traversal protection.
+    """
+    if tarfile.is_tarfile(archive_path):
+        if prefix:
+            strip = prefix.count("/")
+            result = subprocess.run(
+                [
+                    "tar", "xzf", archive_path,
+                    "-C", dest_dir,
+                    f"--strip-components={strip}",
+                    prefix,
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                raise RegistryError(
+                    f"tar extraction failed (exit {result.returncode}): "
+                    f"{result.stderr.strip()[:200]}"
+                )
+        else:
+            with tarfile.open(archive_path) as tf:
+                try:
+                    tf.extractall(dest_dir, filter="data")
+                except TypeError:
+                    # Python < 3.12 lacks the filter parameter
+                    tf.extractall(dest_dir)
+    elif zipfile.is_zipfile(archive_path):
+        safe_root = os.path.realpath(dest_dir)
+        with zipfile.ZipFile(archive_path) as zf:
+            for member in zf.infolist():
+                member_path = os.path.realpath(
+                    os.path.join(dest_dir, member.filename),
+                )
+                if not member_path.startswith(safe_root + os.sep) and member_path != safe_root:
+                    raise RegistryError(
+                        f"zip contains path-traversal entry: {member.filename}"
+                    )
+            zf.extractall(dest_dir)
+    else:
+        raise RegistryError("unsupported archive format (expected .tar.gz or .zip)")
+
+
+def _normalize_extracted(dest_dir: str) -> str:
+    """If the archive contained a single top-level directory, return it."""
+    entries = os.listdir(dest_dir)
+    if len(entries) == 1:
+        single = os.path.join(dest_dir, entries[0])
+        if os.path.isdir(single):
+            return single
+    return dest_dir
+
+
+def fetch_npm_package(
+    package_name: str,
+    dest_dir: str,
+    registry_url: str = DEFAULT_NPM_REGISTRY,
+    version: str | None = None,
+) -> str:
+    """Fetch a package from the npm registry and extract it into *dest_dir*.
+
+    Returns the path to the extracted plugin root directory.
+    """
+    meta_url = _npm_metadata_url(package_name, version, registry_url)
+    try:
+        meta_resp = requests.get(meta_url, timeout=METADATA_TIMEOUT)
+        meta_resp.raise_for_status()
+        meta = meta_resp.json()
+    except requests.RequestException as exc:
+        raise RegistryError(f"npm registry lookup failed: {exc}") from exc
+
+    tarball_url = meta.get("dist", {}).get("tarball")
+    if not tarball_url:
+        raise RegistryError(
+            f"could not resolve tarball URL for {package_name!r} from npm"
+        )
+
+    archive_path = os.path.join(dest_dir, "package.tgz")
+    try:
+        _stream_download(tarball_url, archive_path)
+    except requests.RequestException as exc:
+        raise RegistryError(f"tarball download failed: {exc}") from exc
+
+    extract_dir = os.path.join(dest_dir, "extracted")
+    os.makedirs(extract_dir, exist_ok=True)
+    _extract_archive(archive_path, extract_dir)
+    os.unlink(archive_path)
+
+    return _normalize_extracted(extract_dir)
+
+
+def fetch_from_clawhub(
+    uri: str,
+    dest_dir: str,
+    plugin_name: str | None = None,
+) -> str:
+    """Fetch a plugin from the clawhub registry (npm ``openclaw`` package).
+
+    Returns the path to the extracted plugin directory.
+    """
+    name, version = parse_clawhub_uri(uri)
+    if not name:
+        raise RegistryError(f"invalid clawhub URI: {uri}")
+    if plugin_name is None:
+        plugin_name = name
+
+    try:
+        meta = requests.get(
+            f"{DEFAULT_NPM_REGISTRY}/openclaw/latest", timeout=METADATA_TIMEOUT,
+        ).json()
+        tarball_url = meta.get("dist", {}).get("tarball")
+    except requests.RequestException as exc:
+        raise RegistryError(f"npm registry lookup failed: {exc}") from exc
+
+    if not tarball_url:
+        raise RegistryError("could not resolve openclaw tarball URL from npm")
+
+    archive_path = os.path.join(dest_dir, "openclaw.tgz")
+    try:
+        _stream_download(tarball_url, archive_path)
+    except requests.RequestException as exc:
+        raise RegistryError(f"tarball download failed: {exc}") from exc
+
+    plugin_prefix = f"package/plugins/{plugin_name}/"
+    extract_dir = os.path.join(dest_dir, "plugin")
+    os.makedirs(extract_dir, exist_ok=True)
+
+    try:
+        _extract_archive(archive_path, extract_dir, prefix=plugin_prefix)
+    except RegistryError:
+        raise RegistryError(
+            f"plugin {plugin_name!r} not found in openclaw package"
+        )
+
+    os.unlink(archive_path)
+
+    if not os.listdir(extract_dir):
+        raise RegistryError(
+            f"plugin {plugin_name!r} not found in openclaw package"
+        )
+
+    return extract_dir
+
+
+def fetch_from_url(url: str, dest_dir: str) -> str:
+    """Download a plugin archive from a direct HTTP(S) URL and extract it.
+
+    Returns the path to the extracted plugin root directory.
+    """
+    archive_path = os.path.join(dest_dir, "download")
+    try:
+        _stream_download(url, archive_path)
+    except requests.RequestException as exc:
+        raise RegistryError(f"download failed: {exc}") from exc
+
+    extract_dir = os.path.join(dest_dir, "plugin")
+    os.makedirs(extract_dir, exist_ok=True)
+    _extract_archive(archive_path, extract_dir)
+    os.unlink(archive_path)
+
+    return _normalize_extracted(extract_dir)

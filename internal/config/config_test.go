@@ -74,6 +74,20 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestDefaultGatewayWatcherPluginConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	p := cfg.Gateway.Watcher.Plugin
+	if !p.Enabled {
+		t.Errorf("Gateway.Watcher.Plugin.Enabled = %v, want true", p.Enabled)
+	}
+	if p.TakeAction {
+		t.Errorf("Gateway.Watcher.Plugin.TakeAction = %v, want false", p.TakeAction)
+	}
+	if len(p.Dirs) != 0 {
+		t.Errorf("Gateway.Watcher.Plugin.Dirs = %v, want empty", p.Dirs)
+	}
+}
+
 func TestDefaultConfigGuardrail(t *testing.T) {
 	cfg := DefaultConfig()
 
@@ -455,6 +469,103 @@ func TestConfig_InstalledSkillCandidates(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDefaultPluginActions(t *testing.T) {
+	pa := DefaultPluginActions()
+
+	tests := []struct {
+		severity string
+		file     FileAction
+		runtime  RuntimeAction
+		install  InstallAction
+	}{
+		{"CRITICAL", FileActionNone, RuntimeEnable, InstallNone},
+		{"HIGH", FileActionNone, RuntimeEnable, InstallNone},
+		{"MEDIUM", FileActionNone, RuntimeEnable, InstallNone},
+		{"LOW", FileActionNone, RuntimeEnable, InstallNone},
+		{"INFO", FileActionNone, RuntimeEnable, InstallNone},
+	}
+
+	for _, tt := range tests {
+		got := pa.ForSeverity(tt.severity)
+		if got.File != tt.file {
+			t.Errorf("PluginActions[%s].File = %q, want %q", tt.severity, got.File, tt.file)
+		}
+		if got.Runtime != tt.runtime {
+			t.Errorf("PluginActions[%s].Runtime = %q, want %q", tt.severity, got.Runtime, tt.runtime)
+		}
+		if got.Install != tt.install {
+			t.Errorf("PluginActions[%s].Install = %q, want %q", tt.severity, got.Install, tt.install)
+		}
+	}
+}
+
+func TestPluginActionsShouldDisable(t *testing.T) {
+	pa := DefaultPluginActions()
+	if pa.ShouldDisable("CRITICAL") {
+		t.Error("expected ShouldDisable(CRITICAL)=false with permissive defaults")
+	}
+	if pa.ShouldDisable("LOW") {
+		t.Error("expected ShouldDisable(LOW)=false")
+	}
+}
+
+func TestPluginActionsShouldQuarantine(t *testing.T) {
+	pa := DefaultPluginActions()
+	if pa.ShouldQuarantine("HIGH") {
+		t.Error("expected ShouldQuarantine(HIGH)=false with permissive defaults")
+	}
+	if pa.ShouldQuarantine("MEDIUM") {
+		t.Error("expected ShouldQuarantine(MEDIUM)=false")
+	}
+}
+
+func TestPluginActionsShouldInstallBlock(t *testing.T) {
+	pa := DefaultPluginActions()
+	if pa.ShouldInstallBlock("CRITICAL") {
+		t.Error("expected ShouldInstallBlock(CRITICAL)=false with permissive defaults")
+	}
+	if pa.ShouldInstallBlock("LOW") {
+		t.Error("expected ShouldInstallBlock(LOW)=false")
+	}
+}
+
+func TestPluginActionsValidate(t *testing.T) {
+	pa := DefaultPluginActions()
+	if err := pa.Validate(); err != nil {
+		t.Errorf("Validate() returned unexpected error: %v", err)
+	}
+}
+
+func TestPluginActionsValidateInvalid(t *testing.T) {
+	pa := DefaultPluginActions()
+	pa.Critical.Runtime = "invalid"
+	if err := pa.Validate(); err == nil {
+		t.Error("expected Validate() to return error for invalid runtime")
+	}
+}
+
+func TestDefaultConfigPluginActions(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.PluginActions.Critical.Install != InstallNone {
+		t.Errorf("DefaultConfig().PluginActions.Critical.Install = %q, want %q",
+			cfg.PluginActions.Critical.Install, InstallNone)
+	}
+}
+
+func TestConfig_PluginDirs(t *testing.T) {
+	cfg := &Config{
+		Claw: ClawConfig{HomeDir: "/tmp/test-oc-home"},
+	}
+	dirs := cfg.PluginDirs()
+	if len(dirs) != 1 {
+		t.Fatalf("expected 1 plugin dir, got %d", len(dirs))
+	}
+	want := "/tmp/test-oc-home/extensions"
+	if dirs[0] != want {
+		t.Errorf("PluginDirs()[0] = %q, want %q", dirs[0], want)
 	}
 }
 

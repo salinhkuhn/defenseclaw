@@ -95,6 +95,38 @@ class TestOrchestratorClientSkillOps(unittest.TestCase):
         self.assertTrue(result["ok"])
 
 
+class TestOrchestratorClientPluginOps(unittest.TestCase):
+    def test_disable_plugin(self):
+        client, session = _make_client()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"ok": True}
+        session.post.return_value = mock_resp
+
+        result = client.disable_plugin("bad-plugin")
+
+        session.post.assert_called_once_with(
+            "http://127.0.0.1:18970/plugin/disable",
+            json={"pluginName": "bad-plugin"},
+            timeout=5,
+        )
+        self.assertTrue(result["ok"])
+
+    def test_enable_plugin(self):
+        client, session = _make_client()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"ok": True}
+        session.post.return_value = mock_resp
+
+        result = client.enable_plugin("good-plugin")
+
+        session.post.assert_called_once_with(
+            "http://127.0.0.1:18970/plugin/enable",
+            json={"pluginName": "good-plugin"},
+            timeout=5,
+        )
+        self.assertTrue(result["ok"])
+
+
 class TestOrchestratorClientPatchConfig(unittest.TestCase):
     def test_patch_config(self):
         client, session = _make_client()

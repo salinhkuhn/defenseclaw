@@ -19,6 +19,8 @@ from defenseclaw.config import (
     GatewayWatcherSkillConfig,
     InspectLLMConfig,
     MCPScannerConfig,
+    GatewayWatcherPluginConfig,
+    PluginActionsConfig,
     SeverityAction,
     SkillActionsConfig,
     SkillScannerConfig,
@@ -28,6 +30,7 @@ from defenseclaw.config import (
     _merge_gateway_watcher,
     _merge_inspect_llm,
     _merge_mcp_scanner,
+    _merge_plugin_actions,
     _merge_severity_action,
     _merge_skill_actions,
     default_config,
@@ -41,7 +44,8 @@ from defenseclaw.config import (
 class TestHelpers(unittest.TestCase):
     def test_expand_tilde(self):
         result = _expand("~/foo/bar")
-        self.assertTrue(result.endswith("foo/bar"))
+        # On Windows os.path.expanduser uses backslashes
+        self.assertTrue(result.endswith(os.path.join("foo", "bar")))
         self.assertFalse(result.startswith("~"))
 
     def test_expand_non_tilde(self):
@@ -145,6 +149,28 @@ class TestMergeFunctions(unittest.TestCase):
         self.assertEqual(sa.critical.install, "block")
         self.assertEqual(sa.high.install, "none")
 
+    def test_merge_plugin_actions_none(self):
+        pa = _merge_plugin_actions(None)
+        self.assertEqual(pa.critical.file, "none")
+        self.assertEqual(pa.critical.runtime, "enable")
+        self.assertEqual(pa.critical.install, "none")
+        self.assertEqual(pa.medium.file, "none")
+        self.assertEqual(pa.medium.runtime, "enable")
+
+    def test_merge_plugin_actions_override(self):
+        pa = _merge_plugin_actions({"high": {"file": "quarantine", "runtime": "disable", "install": "block"}})
+        self.assertEqual(pa.high.install, "block")
+        self.assertEqual(pa.high.file, "quarantine")
+        self.assertEqual(pa.critical.install, "none")
+
+    def test_plugin_actions_for_severity(self):
+        pa = PluginActionsConfig()
+        self.assertEqual(pa.for_severity("CRITICAL").install, "none")
+        self.assertFalse(pa.should_disable("HIGH"))
+        self.assertFalse(pa.should_quarantine("CRITICAL"))
+        self.assertFalse(pa.should_install_block("LOW"))
+        self.assertEqual(pa.for_severity("BOGUS").runtime, "enable")
+
     def test_merge_gateway_watcher_none(self):
         gw = _merge_gateway_watcher(None)
         self.assertTrue(gw.enabled)
@@ -156,6 +182,25 @@ class TestMergeFunctions(unittest.TestCase):
         self.assertTrue(gw.enabled)
         self.assertFalse(gw.skill.enabled)
         self.assertEqual(gw.skill.dirs, ["/tmp"])
+
+    def test_merge_gateway_watcher_with_plugin(self):
+        gw = _merge_gateway_watcher(
+            {
+                "enabled": True,
+                "plugin": {
+                    "enabled": False,
+                    "take_action": True,
+                    "dirs": ["/opt/plugins"],
+                },
+            }
+        )
+        self.assertTrue(gw.enabled)
+        self.assertFalse(gw.plugin.enabled)
+        self.assertTrue(gw.plugin.take_action)
+        self.assertEqual(gw.plugin.dirs, ["/opt/plugins"])
+
+        gw_no_plugin = _merge_gateway_watcher({"enabled": True})
+        self.assertEqual(gw_no_plugin.plugin, GatewayWatcherPluginConfig())
 
 
 class TestDefaultConfig(unittest.TestCase):
@@ -286,7 +331,8 @@ class TestClawPaths(unittest.TestCase):
             config_file="/tmp/nonexistent-oc/openclaw.json",
         ))
         dirs = cfg.skill_dirs()
-        self.assertIn("/tmp/nonexistent-oc/skills", dirs)
+        expected = os.path.join("/tmp/nonexistent-oc", "skills")
+        self.assertIn(expected, dirs)
 
     def test_skill_dirs_with_openclaw_json(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -306,6 +352,12 @@ class TestClawPaths(unittest.TestCase):
             self.assertIn(os.path.join(tmpdir, "skills"), dirs)
             self.assertIn("/tmp/extra-skills", dirs)
             self.assertIn(os.path.join(tmpdir, "skills"), dirs)
+
+    def test_plugin_dirs(self):
+        cfg = Config(claw=ClawConfig(home_dir="/tmp/test-oc"))
+        dirs = cfg.plugin_dirs()
+        self.assertEqual(len(dirs), 1)
+        self.assertEqual(dirs[0], os.path.join("/tmp/test-oc", "extensions"))
 
     def test_installed_skill_candidates(self):
         cfg = Config(claw=ClawConfig(

@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -149,10 +148,8 @@ func (d *Daemon) Start(args []string) (int, error) {
 	cmd.Stderr = logFile
 	cmd.Dir = d.dataDir
 
-	// Detach from parent process group
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-	}
+	// Detach from parent process group (platform-specific)
+	setSysProcAttr(cmd)
 
 	if err := cmd.Start(); err != nil {
 		devNull.Close()
@@ -197,13 +194,13 @@ func (d *Daemon) Stop(timeout time.Duration) error {
 		return fmt.Errorf("daemon: find process %d: %w", pid, err)
 	}
 
-	// Send SIGTERM for graceful shutdown
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
+	// Send termination signal for graceful shutdown
+	if err := sendTermSignal(proc); err != nil {
 		if errors.Is(err, os.ErrProcessDone) {
 			_ = os.Remove(d.pidFile)
 			return nil
 		}
-		return fmt.Errorf("daemon: send SIGTERM: %w", err)
+		return fmt.Errorf("daemon: send term signal: %w", err)
 	}
 
 	// Wait for process to exit
@@ -217,7 +214,7 @@ func (d *Daemon) Stop(timeout time.Duration) error {
 	}
 
 	// Force kill if still running
-	_ = proc.Signal(syscall.SIGKILL)
+	_ = sendKillSignal(proc)
 	time.Sleep(100 * time.Millisecond)
 
 	if processExists(pid) {
@@ -265,16 +262,6 @@ func (d *Daemon) writePIDInfo(pid int, executable string) error {
 		return err
 	}
 	return os.WriteFile(d.pidFile, data, 0600)
-}
-
-func processExists(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	// On Unix, FindProcess always succeeds. Send signal 0 to check if alive.
-	err = proc.Signal(syscall.Signal(0))
-	return err == nil
 }
 
 func IsDaemonChild() bool {

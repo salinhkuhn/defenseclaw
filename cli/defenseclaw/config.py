@@ -184,9 +184,17 @@ class GatewayWatcherSkillConfig:
 
 
 @dataclass
+class GatewayWatcherPluginConfig:
+    enabled: bool = True
+    take_action: bool = False
+    dirs: list[str] = field(default_factory=list)
+
+
+@dataclass
 class GatewayWatcherConfig:
     enabled: bool = True
     skill: GatewayWatcherSkillConfig = field(default_factory=GatewayWatcherSkillConfig)
+    plugin: GatewayWatcherPluginConfig = field(default_factory=GatewayWatcherPluginConfig)
 
 
 @dataclass
@@ -261,6 +269,32 @@ class MCPActionsConfig:
 
 
 @dataclass
+class PluginActionsConfig:
+    critical: SeverityAction = field(default_factory=SeverityAction)
+    high: SeverityAction = field(default_factory=SeverityAction)
+    medium: SeverityAction = field(default_factory=SeverityAction)
+    low: SeverityAction = field(default_factory=SeverityAction)
+    info: SeverityAction = field(default_factory=SeverityAction)
+
+    def for_severity(self, severity: str) -> SeverityAction:
+        return {
+            "CRITICAL": self.critical,
+            "HIGH": self.high,
+            "MEDIUM": self.medium,
+            "LOW": self.low,
+        }.get(severity.upper(), self.info)
+
+    def should_disable(self, severity: str) -> bool:
+        return self.for_severity(severity).runtime == "disable"
+
+    def should_quarantine(self, severity: str) -> bool:
+        return self.for_severity(severity).file == "quarantine"
+
+    def should_install_block(self, severity: str) -> bool:
+        return self.for_severity(severity).install == "block"
+
+
+@dataclass
 class FirewallConfig:
     config_file: str = ""
     rules_file: str = ""
@@ -302,6 +336,7 @@ class Config:
     gateway: GatewayConfig = field(default_factory=GatewayConfig)
     skill_actions: SkillActionsConfig = field(default_factory=SkillActionsConfig)
     mcp_actions: MCPActionsConfig = field(default_factory=MCPActionsConfig)
+    plugin_actions: PluginActionsConfig = field(default_factory=PluginActionsConfig)
 
     # -- Claw-mode path resolution (mirrors claw.go) --
 
@@ -320,6 +355,14 @@ class Config:
                 dirs.append(_expand(d))
         dirs.append(os.path.join(home, "skills"))
         return _dedup(dirs)
+
+    def plugin_dirs(self) -> list[str]:
+        """Return plugin directories for the active claw mode.
+
+        For OpenClaw, plugins (extensions) live under claw_home/extensions.
+        """
+        home = self.claw_home_dir()
+        return [os.path.join(home, "extensions")]
 
     def mcp_servers(self) -> list[MCPServerEntry]:
         """Return MCP servers from openclaw.json mcp.servers.
@@ -499,6 +542,19 @@ def _merge_inspect_llm(raw: dict[str, Any] | None) -> InspectLLMConfig:
     )
 
 
+def _merge_plugin_actions(raw: dict[str, Any] | None) -> PluginActionsConfig:
+    defaults = PluginActionsConfig()
+    if not raw:
+        return defaults
+    return PluginActionsConfig(
+        critical=_merge_severity_action(raw.get("critical")) if "critical" in raw else defaults.critical,
+        high=_merge_severity_action(raw.get("high")) if "high" in raw else defaults.high,
+        medium=_merge_severity_action(raw.get("medium")) if "medium" in raw else defaults.medium,
+        low=_merge_severity_action(raw.get("low")) if "low" in raw else defaults.low,
+        info=_merge_severity_action(raw.get("info")) if "info" in raw else defaults.info,
+    )
+
+
 def _merge_cisco_ai_defense(raw: dict[str, Any] | None) -> CiscoAIDefenseConfig:
     if not raw:
         return CiscoAIDefenseConfig()
@@ -553,12 +609,18 @@ def _merge_gateway_watcher(raw: dict[str, Any] | None) -> GatewayWatcherConfig:
     if not raw:
         return GatewayWatcherConfig()
     skill_raw = raw.get("skill", {})
+    plugin_raw = raw.get("plugin", {})
     return GatewayWatcherConfig(
         enabled=raw.get("enabled", True),
         skill=GatewayWatcherSkillConfig(
             enabled=skill_raw.get("enabled", True),
             take_action=skill_raw.get("take_action", False),
             dirs=skill_raw.get("dirs", []),
+        ),
+        plugin=GatewayWatcherPluginConfig(
+            enabled=plugin_raw.get("enabled", True),
+            take_action=plugin_raw.get("take_action", False),
+            dirs=plugin_raw.get("dirs", []),
         ),
     )
 
@@ -650,6 +712,7 @@ def load() -> Config:
         ),
         skill_actions=_merge_skill_actions(raw.get("skill_actions")),
         mcp_actions=_merge_mcp_actions(raw.get("mcp_actions")),
+        plugin_actions=_merge_plugin_actions(raw.get("plugin_actions")),
     )
 
 

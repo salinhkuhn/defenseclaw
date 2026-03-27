@@ -46,6 +46,91 @@ func (c *Client) BlockMCPServer(ctx context.Context, serverName string) error {
 	return nil
 }
 
+// pluginConfigRaw builds the nested config object for plugin enable/disable.
+// OpenClaw requires plugins to be in both plugins.allow and
+// plugins.entries.<name>.enabled to be fully active.
+func pluginConfigRaw(pluginName string, enabled bool, allowList []string) map[string]interface{} {
+	cfg := map[string]interface{}{
+		"plugins": map[string]interface{}{
+			"allow": allowList,
+			"entries": map[string]interface{}{
+				pluginName: map[string]interface{}{
+					"enabled": enabled,
+				},
+			},
+		},
+	}
+	return cfg
+}
+
+// updateAllowList returns a new allow list with pluginName added (if enable)
+// or removed (if disable), preserving existing entries.
+func updateAllowList(current []string, pluginName string, add bool) []string {
+	out := make([]string, 0, len(current)+1)
+	for _, s := range current {
+		if s != pluginName {
+			out = append(out, s)
+		}
+	}
+	if add {
+		out = append(out, pluginName)
+	}
+	return out
+}
+
+// setPluginEnabled patches the OpenClaw config to enable or disable a plugin.
+// Uses config.patch (merge) instead of config.set (replace) to avoid
+// overwriting unrelated config. Requires a baseHash from config.get for
+// optimistic concurrency control.
+//
+// OpenClaw requires plugins to appear in both plugins.allow and
+// plugins.entries.<name>.enabled, so this function reads the current
+// allow list and adds/removes the plugin name accordingly.
+func (c *Client) setPluginEnabled(ctx context.Context, pluginName string, enabled bool) error {
+	cfgResp, err := c.GetConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("gateway: config.get for plugin %q: %w", pluginName, err)
+	}
+
+	var snapshot configGetResponse
+	if err := json.Unmarshal(cfgResp, &snapshot); err != nil {
+		return fmt.Errorf("gateway: parse config.get for plugin %q: %w", pluginName, err)
+	}
+
+	var currentAllow []string
+	if snapshot.Config != nil && snapshot.Config.Plugins != nil {
+		currentAllow = snapshot.Config.Plugins.Allow
+	}
+	newAllow := updateAllowList(currentAllow, pluginName, enabled)
+
+	raw, err := json.Marshal(pluginConfigRaw(pluginName, enabled, newAllow))
+	if err != nil {
+		return fmt.Errorf("gateway: marshal config for plugin %q: %w", pluginName, err)
+	}
+
+	params := ConfigPatchRawParams{
+		Raw:      string(raw),
+		BaseHash: snapshot.Hash,
+	}
+	_, err = c.Request(ctx, "config.patch", params)
+	if err != nil {
+		return fmt.Errorf("gateway: config.patch plugin %q: %w", pluginName, err)
+	}
+	return nil
+}
+
+// DisablePlugin tells the gateway to disable a plugin by name.
+// Uses config.get + config.patch since the gateway has no native plugin RPC.
+func (c *Client) DisablePlugin(ctx context.Context, pluginName string) error {
+	return c.setPluginEnabled(ctx, pluginName, false)
+}
+
+// EnablePlugin tells the gateway to enable a plugin by name.
+// Uses config.get + config.patch since the gateway has no native plugin RPC.
+func (c *Client) EnablePlugin(ctx context.Context, pluginName string) error {
+	return c.setPluginEnabled(ctx, pluginName, true)
+}
+
 // GetConfig fetches the current gateway configuration.
 func (c *Client) GetConfig(ctx context.Context) (json.RawMessage, error) {
 	return c.Request(ctx, "config.get", nil)

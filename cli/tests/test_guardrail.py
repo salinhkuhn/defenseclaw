@@ -237,7 +237,12 @@ class TestWriteLitellmConfig(unittest.TestCase):
             self.assertIn("model_list", content)
 
     def test_returns_error_on_bad_path(self):
-        ok, err = write_litellm_config({"model_list": []}, "/nonexistent/dir/config.yaml")
+        # Use a path that is invalid on both Unix and Windows
+        bad_path = os.path.join(os.sep, "nonexistent", "dir", "sub", "deep", "config.yaml")
+        if os.name == "nt":
+            # On Windows, /nonexistent resolves to current drive — use an invalid drive letter
+            bad_path = "Z:\\nonexistent\\dir\\config.yaml"
+        ok, err = write_litellm_config({"model_list": []}, bad_path)
         self.assertFalse(ok)
         self.assertTrue(len(err) > 0)
 
@@ -456,6 +461,10 @@ class TestUninstallOpenclawPlugin(unittest.TestCase):
             self.assertNotIn("defenseclaw", plugins.get("installs", {}))
             self.assertEqual(plugins.get("load", {}).get("paths", []), [])
 
+    @unittest.skipIf(
+        os.name == "nt" and not os.environ.get("CI"),
+        "os.symlink requires admin or Developer Mode on Windows",
+    )
     @patch("defenseclaw.guardrail.subprocess.run", side_effect=FileNotFoundError)
     def test_manual_fallback_removes_symlink(self, _mock_run):
         with tempfile.TemporaryDirectory() as tmpdir:

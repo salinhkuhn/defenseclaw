@@ -102,6 +102,56 @@ func (a *MCPActionsConfig) Validate() error {
 	})
 }
 
+func DefaultPluginActions() PluginActionsConfig {
+	return PluginActionsConfig{
+		Critical: SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
+		High:     SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
+		Medium:   SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
+		Low:      SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
+		Info:     SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
+	}
+}
+
+func (a *PluginActionsConfig) ForSeverity(severity string) SeverityAction {
+	switch strings.ToUpper(severity) {
+	case "CRITICAL":
+		return a.Critical
+	case "HIGH":
+		return a.High
+	case "MEDIUM":
+		return a.Medium
+	case "LOW":
+		return a.Low
+	default:
+		return a.Info
+	}
+}
+
+func (a *PluginActionsConfig) ShouldDisable(severity string) bool {
+	return a.ForSeverity(severity).Runtime == RuntimeDisable
+}
+
+func (a *PluginActionsConfig) ShouldQuarantine(severity string) bool {
+	return a.ForSeverity(severity).File == FileActionQuarantine
+}
+
+func (a *PluginActionsConfig) ShouldInstallBlock(severity string) bool {
+	return a.ForSeverity(severity).Install == InstallBlock
+}
+
+func (a *PluginActionsConfig) Validate() error {
+	return validateActions("plugin_actions", []struct {
+		label  string
+		action SeverityAction
+	}{
+		{"critical", a.Critical},
+		{"high", a.High},
+		{"medium", a.Medium},
+		{"low", a.Low},
+		{"info", a.Info},
+	})
+}
+
 func validateActions(prefix string, entries []struct {
 	label  string
 	action SeverityAction

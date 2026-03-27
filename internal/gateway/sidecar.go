@@ -191,10 +191,18 @@ func (s *Sidecar) runWatcher(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "[sidecar] watcher: skill watching disabled\n")
 	}
 
-	// Plugin dirs from the config plugin_dir.
+	// Plugin dirs: explicit config overrides autodiscovery from claw mode
 	var pluginDirs []string
-	if s.cfg.PluginDir != "" {
-		pluginDirs = []string{s.cfg.PluginDir}
+	if wcfg.Plugin.Enabled {
+		if len(wcfg.Plugin.Dirs) > 0 {
+			pluginDirs = wcfg.Plugin.Dirs
+			fmt.Fprintf(os.Stderr, "[sidecar] watcher: using configured plugin dirs: %v\n", pluginDirs)
+		} else {
+			pluginDirs = s.cfg.PluginDirs()
+			fmt.Fprintf(os.Stderr, "[sidecar] watcher: autodiscovered plugin dirs: %v\n", pluginDirs)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "[sidecar] watcher: plugin watching disabled\n")
 	}
 
 	if len(skillDirs) == 0 && len(pluginDirs) == 0 {
@@ -205,8 +213,10 @@ func (s *Sidecar) runWatcher(ctx context.Context) error {
 	}
 
 	s.health.SetWatcher(StateStarting, "", map[string]interface{}{
-		"skill_dirs":        len(skillDirs),
-		"skill_take_action": wcfg.Skill.TakeAction,
+		"skill_dirs":         len(skillDirs),
+		"plugin_dirs":        len(pluginDirs),
+		"skill_take_action":  wcfg.Skill.TakeAction,
+		"plugin_take_action": wcfg.Plugin.TakeAction,
 	})
 
 	var opa *policy.Engine
@@ -228,12 +238,14 @@ func (s *Sidecar) runWatcher(ctx context.Context) error {
 		s.handleAdmissionResult(r)
 	})
 
-	fmt.Fprintf(os.Stderr, "[sidecar] watcher starting (%d skill dirs, skill_take_action=%v)\n",
-		len(skillDirs), wcfg.Skill.TakeAction)
+	fmt.Fprintf(os.Stderr, "[sidecar] watcher starting (%d skill dirs, %d plugin dirs, skill_take_action=%v, plugin_take_action=%v)\n",
+		len(skillDirs), len(pluginDirs), wcfg.Skill.TakeAction, wcfg.Plugin.TakeAction)
 
 	s.health.SetWatcher(StateRunning, "", map[string]interface{}{
-		"skill_dirs":        len(skillDirs),
-		"skill_take_action": wcfg.Skill.TakeAction,
+		"skill_dirs":         len(skillDirs),
+		"plugin_dirs":        len(pluginDirs),
+		"skill_take_action":  wcfg.Skill.TakeAction,
+		"plugin_take_action": wcfg.Plugin.TakeAction,
 	})
 
 	err := w.Run(ctx)
@@ -241,9 +253,8 @@ func (s *Sidecar) runWatcher(ctx context.Context) error {
 	return err
 }
 
-// handleAdmissionResult processes watcher verdicts. For blocked/rejected
-// skills and MCP servers, it disables them at the gateway level when the
-// corresponding take_action flag is enabled.
+// handleAdmissionResult processes watcher verdicts. For blocked/rejected skills
+// and plugins, it also disables them at the gateway level when take_action is enabled.
 func (s *Sidecar) handleAdmissionResult(r watcher.AdmissionResult) {
 	fmt.Fprintf(os.Stderr, "[sidecar] watcher verdict: %s %s — %s (%s)\n",
 		r.Event.Type, r.Event.Name, r.Verdict, r.Reason)
@@ -252,30 +263,60 @@ func (s *Sidecar) handleAdmissionResult(r watcher.AdmissionResult) {
 		return
 	}
 
-	if r.Event.Type != watcher.InstallSkill {
-		return
+	switch r.Event.Type {
+	case watcher.InstallSkill:
+		s.handleSkillAdmission(r)
+	case watcher.InstallPlugin:
+		s.handlePluginAdmission(r)
+	default:
+		if s.logger != nil {
+			_ = s.logger.LogAction("sidecar-watcher-verdict", r.Event.Name,
+				fmt.Sprintf("type=%s verdict=%s (no handler)", r.Event.Type, r.Verdict))
+		}
 	}
+}
 
+func (s *Sidecar) handleSkillAdmission(r watcher.AdmissionResult) {
 	if !s.cfg.Gateway.Watcher.Skill.TakeAction {
-		fmt.Fprintf(os.Stderr, "[sidecar] watcher: %s %s verdict=%s (take_action=false, logging only)\n",
-			r.Event.Type, r.Event.Name, r.Verdict)
+		fmt.Fprintf(os.Stderr, "[sidecar] watcher: skill %s verdict=%s (take_action=false, logging only)\n",
+			r.Event.Name, r.Verdict)
 		_ = s.logger.LogAction("sidecar-watcher-verdict", r.Event.Name,
-			fmt.Sprintf("type=%s verdict=%s (take_action disabled, no gateway action)", r.Event.Type, r.Verdict))
+			fmt.Sprintf("verdict=%s (take_action disabled, no gateway action)", r.Verdict))
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*1e9)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := s.client.DisableSkill(ctx, r.Event.Name)
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[sidecar] watcher→gateway disable %s %s failed: %v\n",
-			r.Event.Type, r.Event.Name, err)
+	if err := s.client.DisableSkill(ctx, r.Event.Name); err != nil {
+		fmt.Fprintf(os.Stderr, "[sidecar] watcher→gateway disable skill %s failed: %v\n",
+			r.Event.Name, err)
 	} else {
-		fmt.Fprintf(os.Stderr, "[sidecar] watcher→gateway disabled %s %s\n", r.Event.Type, r.Event.Name)
+		fmt.Fprintf(os.Stderr, "[sidecar] watcher→gateway disabled skill %s\n", r.Event.Name)
 		_ = s.logger.LogAction("sidecar-watcher-disable", r.Event.Name,
-			fmt.Sprintf("auto-disabled via gateway after verdict=%s type=%s", r.Verdict, r.Event.Type))
+			fmt.Sprintf("auto-disabled skill via gateway after verdict=%s", r.Verdict))
+	}
+}
+
+func (s *Sidecar) handlePluginAdmission(r watcher.AdmissionResult) {
+	if !s.cfg.Gateway.Watcher.Plugin.TakeAction {
+		fmt.Fprintf(os.Stderr, "[sidecar] watcher: plugin %s verdict=%s (take_action=false, logging only)\n",
+			r.Event.Name, r.Verdict)
+		_ = s.logger.LogAction("sidecar-watcher-verdict", r.Event.Name,
+			fmt.Sprintf("verdict=%s (plugin take_action disabled, no gateway action)", r.Verdict))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := s.client.DisablePlugin(ctx, r.Event.Name); err != nil {
+		fmt.Fprintf(os.Stderr, "[sidecar] watcher→gateway disable plugin %s failed: %v\n",
+			r.Event.Name, err)
+	} else {
+		fmt.Fprintf(os.Stderr, "[sidecar] watcher→gateway disabled plugin %s\n", r.Event.Name)
+		_ = s.logger.LogAction("sidecar-watcher-disable-plugin", r.Event.Name,
+			fmt.Sprintf("auto-disabled plugin via gateway after verdict=%s", r.Verdict))
 	}
 }
 

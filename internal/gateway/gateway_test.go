@@ -700,6 +700,159 @@ func TestSkillsUpdateParamsSerialization(t *testing.T) {
 	}
 }
 
+func TestConfigPatchRawParamsSerialization(t *testing.T) {
+	allowList := []string{"existing-a"}
+	rawJSON, _ := json.Marshal(pluginConfigRaw("my-plugin", false, allowList))
+	params := ConfigPatchRawParams{Raw: string(rawJSON), BaseHash: "abc123"}
+	data, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	rawStr, ok := parsed["raw"].(string)
+	if !ok {
+		t.Fatal("raw should be a string")
+	}
+	if parsed["baseHash"] != "abc123" {
+		t.Errorf("baseHash = %v, want abc123", parsed["baseHash"])
+	}
+	var nested map[string]interface{}
+	if err := json.Unmarshal([]byte(rawStr), &nested); err != nil {
+		t.Fatalf("raw JSON parse: %v", err)
+	}
+	plugins := nested["plugins"].(map[string]interface{})
+	entries := plugins["entries"].(map[string]interface{})
+	entry := entries["my-plugin"].(map[string]interface{})
+	if entry["enabled"] != false {
+		t.Errorf("enabled = %v, want false", entry["enabled"])
+	}
+	allow, ok := plugins["allow"].([]interface{})
+	if !ok {
+		t.Fatal("plugins.allow should be an array")
+	}
+	if len(allow) != 1 || allow[0] != "existing-a" {
+		t.Errorf("plugins.allow = %v, want [existing-a]", allow)
+	}
+}
+
+func TestUpdateAllowList(t *testing.T) {
+	tests := []struct {
+		name    string
+		current []string
+		plugin  string
+		add     bool
+		want    []string
+	}{
+		{"add to empty", nil, "xai", true, []string{"xai"}},
+		{"add to existing", []string{"whatsapp"}, "xai", true, []string{"whatsapp", "xai"}},
+		{"add already present (dedup)", []string{"xai", "whatsapp"}, "xai", true, []string{"whatsapp", "xai"}},
+		{"remove present", []string{"whatsapp", "xai"}, "xai", false, []string{"whatsapp"}},
+		{"remove absent is no-op", []string{"whatsapp"}, "xai", false, []string{"whatsapp"}},
+		{"remove from empty", nil, "xai", false, []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := updateAllowList(tt.current, tt.plugin, tt.add)
+			if len(got) != len(tt.want) {
+				t.Fatalf("len = %d, want %d; got %v", len(got), len(tt.want), got)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("got[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestConfigGetResponseNestedParsing(t *testing.T) {
+	tests := []struct {
+		name      string
+		payload   string
+		wantHash  string
+		wantAllow []string
+	}{
+		{
+			"full response with config.plugins.allow",
+			`{"hash":"abc123","config":{"plugins":{"allow":["whatsapp","defenseclaw"]}}}`,
+			"abc123",
+			[]string{"whatsapp", "defenseclaw"},
+		},
+		{
+			"no config key",
+			`{"hash":"def456"}`,
+			"def456",
+			nil,
+		},
+		{
+			"config without plugins",
+			`{"hash":"ghi789","config":{"models":{}}}`,
+			"ghi789",
+			nil,
+		},
+		{
+			"config with empty allow",
+			`{"hash":"jkl012","config":{"plugins":{"allow":[]}}}`,
+			"jkl012",
+			[]string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resp configGetResponse
+			if err := json.Unmarshal([]byte(tt.payload), &resp); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if resp.Hash != tt.wantHash {
+				t.Errorf("Hash = %q, want %q", resp.Hash, tt.wantHash)
+			}
+			var gotAllow []string
+			if resp.Config != nil && resp.Config.Plugins != nil {
+				gotAllow = resp.Config.Plugins.Allow
+			}
+			if len(gotAllow) != len(tt.wantAllow) {
+				t.Fatalf("allow len = %d, want %d; got %v", len(gotAllow), len(tt.wantAllow), gotAllow)
+			}
+			for i := range tt.wantAllow {
+				if gotAllow[i] != tt.wantAllow[i] {
+					t.Errorf("allow[%d] = %q, want %q", i, gotAllow[i], tt.wantAllow[i])
+				}
+			}
+		})
+	}
+}
+
+func TestPluginConfigRawEnableAddsToAllow(t *testing.T) {
+	cfg := pluginConfigRaw("xai", true, []string{"whatsapp", "xai"})
+	plugins := cfg["plugins"].(map[string]interface{})
+	allow := plugins["allow"].([]string)
+	if len(allow) != 2 || allow[0] != "whatsapp" || allow[1] != "xai" {
+		t.Errorf("allow = %v, want [whatsapp xai]", allow)
+	}
+	entries := plugins["entries"].(map[string]interface{})
+	entry := entries["xai"].(map[string]interface{})
+	if entry["enabled"] != true {
+		t.Errorf("enabled = %v, want true", entry["enabled"])
+	}
+}
+
+func TestPluginConfigRawDisableRemovesFromAllow(t *testing.T) {
+	cfg := pluginConfigRaw("xai", false, []string{"whatsapp"})
+	plugins := cfg["plugins"].(map[string]interface{})
+	allow := plugins["allow"].([]string)
+	if len(allow) != 1 || allow[0] != "whatsapp" {
+		t.Errorf("allow = %v, want [whatsapp]", allow)
+	}
+	entries := plugins["entries"].(map[string]interface{})
+	entry := entries["xai"].(map[string]interface{})
+	if entry["enabled"] != false {
+		t.Errorf("enabled = %v, want false", entry["enabled"])
+	}
+}
+
 func TestConfigPatchParamsSerialization(t *testing.T) {
 	params := ConfigPatchParams{Path: "gateway.auto_approve", Value: true}
 	data, _ := json.Marshal(params)
@@ -1727,6 +1880,180 @@ func TestAPISkillEnableMethodNotAllowed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/skill/enable", nil)
 	w := httptest.NewRecorder()
 	api.handleSkillEnable(w, req)
+
+	if w.Result().StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestAPIPluginDisableSuccess(t *testing.T) {
+	received := make(chan receivedRequest, 5)
+	srv := startMockGW(t, rpcRecordingLoop(received))
+	client := connectToMockGW(t, srv)
+	_, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), client: client, logger: logger}
+
+	body, _ := json.Marshal(pluginActionRequest{PluginName: "bad-plugin"})
+	req := httptest.NewRequest(http.MethodPost, "/plugin/disable", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handlePluginDisable(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusOK)
+	}
+
+	var result map[string]string
+	json.NewDecoder(w.Result().Body).Decode(&result)
+	if result["status"] != "disabled" {
+		t.Errorf("status = %q, want disabled", result["status"])
+	}
+	if result["pluginName"] != "bad-plugin" {
+		t.Errorf("pluginName = %q, want bad-plugin", result["pluginName"])
+	}
+
+	configGet := drainRPC(t, received)
+	if configGet.Method != "config.get" {
+		t.Errorf("first RPC Method = %q, want config.get", configGet.Method)
+	}
+	configPatch := drainRPC(t, received)
+	if configPatch.Method != "config.patch" {
+		t.Errorf("second RPC Method = %q, want config.patch", configPatch.Method)
+	}
+}
+
+func TestAPIPluginEnableSuccess(t *testing.T) {
+	received := make(chan receivedRequest, 5)
+	srv := startMockGW(t, rpcRecordingLoop(received))
+	client := connectToMockGW(t, srv)
+	_, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), client: client, logger: logger}
+
+	body, _ := json.Marshal(pluginActionRequest{PluginName: "good-plugin"})
+	req := httptest.NewRequest(http.MethodPost, "/plugin/enable", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handlePluginEnable(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusOK)
+	}
+
+	var result map[string]string
+	json.NewDecoder(w.Result().Body).Decode(&result)
+	if result["status"] != "enabled" {
+		t.Errorf("status = %q, want enabled", result["status"])
+	}
+	if result["pluginName"] != "good-plugin" {
+		t.Errorf("pluginName = %q, want good-plugin", result["pluginName"])
+	}
+
+	configGet := drainRPC(t, received)
+	if configGet.Method != "config.get" {
+		t.Errorf("first RPC Method = %q, want config.get", configGet.Method)
+	}
+	configPatch := drainRPC(t, received)
+	assertPluginConfigPatch(t, configPatch.Params, "good-plugin", true)
+}
+
+func TestAPIPluginDisableMissingBody(t *testing.T) {
+	_, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), logger: logger}
+
+	req := httptest.NewRequest(http.MethodPost, "/plugin/disable", bytes.NewBufferString("invalid"))
+	w := httptest.NewRecorder()
+	api.handlePluginDisable(w, req)
+
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestAPIPluginDisableEmptyName(t *testing.T) {
+	_, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), logger: logger}
+
+	body, _ := json.Marshal(pluginActionRequest{PluginName: ""})
+	req := httptest.NewRequest(http.MethodPost, "/plugin/disable", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handlePluginDisable(w, req)
+
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestAPIPluginDisableNoClient(t *testing.T) {
+	_, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), client: nil, logger: logger}
+
+	body, _ := json.Marshal(pluginActionRequest{PluginName: "my-plugin"})
+	req := httptest.NewRequest(http.MethodPost, "/plugin/disable", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handlePluginDisable(w, req)
+
+	if w.Result().StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
+func TestAPIPluginDisableMethodNotAllowed(t *testing.T) {
+	api := &APIServer{health: NewSidecarHealth()}
+
+	req := httptest.NewRequest(http.MethodGet, "/plugin/disable", nil)
+	w := httptest.NewRecorder()
+	api.handlePluginDisable(w, req)
+
+	if w.Result().StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestAPIPluginEnableMissingBody(t *testing.T) {
+	_, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), logger: logger}
+
+	req := httptest.NewRequest(http.MethodPost, "/plugin/enable", bytes.NewBufferString("bad"))
+	w := httptest.NewRecorder()
+	api.handlePluginEnable(w, req)
+
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestAPIPluginEnableEmptyName(t *testing.T) {
+	_, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), logger: logger}
+
+	body, _ := json.Marshal(pluginActionRequest{PluginName: ""})
+	req := httptest.NewRequest(http.MethodPost, "/plugin/enable", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handlePluginEnable(w, req)
+
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestAPIPluginEnableNoClient(t *testing.T) {
+	_, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), client: nil, logger: logger}
+
+	body, _ := json.Marshal(pluginActionRequest{PluginName: "my-plugin"})
+	req := httptest.NewRequest(http.MethodPost, "/plugin/enable", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handlePluginEnable(w, req)
+
+	if w.Result().StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
+func TestAPIPluginEnableMethodNotAllowed(t *testing.T) {
+	api := &APIServer{health: NewSidecarHealth()}
+
+	req := httptest.NewRequest(http.MethodGet, "/plugin/enable", nil)
+	w := httptest.NewRecorder()
+	api.handlePluginEnable(w, req)
 
 	if w.Result().StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusMethodNotAllowed)

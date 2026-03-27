@@ -7,6 +7,7 @@ GOBIN       := $(shell go env GOPATH)/bin
 INSTALL_DIR := $(HOME)/.local/bin
 PLUGIN_DIR  := extensions/defenseclaw
 DC_EXT_DIR  := $(HOME)/.defenseclaw/extensions/defenseclaw
+OC_EXT_DIR  := $(HOME)/.openclaw/extensions/defenseclaw
 
 DIST_DIR    := dist
 
@@ -116,8 +117,15 @@ plugin-install: plugin
 			fi; \
 		done; \
 	fi
+	@if [ -d $(OC_EXT_DIR) ]; then \
+		rm -rf $(OC_EXT_DIR)/dist; \
+		cp $(PLUGIN_DIR)/package.json $(OC_EXT_DIR)/; \
+		test -f $(PLUGIN_DIR)/openclaw.plugin.json && cp $(PLUGIN_DIR)/openclaw.plugin.json $(OC_EXT_DIR)/ || true; \
+		cp -r $(PLUGIN_DIR)/dist $(OC_EXT_DIR)/; \
+		echo "Synced OpenClaw plugin to $(OC_EXT_DIR)"; \
+	fi
 	@echo "Installed OpenClaw plugin to $(DC_EXT_DIR)"
-	@echo "  Run 'defenseclaw setup guardrail' to register with OpenClaw"
+	@echo "  Run 'defenseclaw setup guardrail' to register with OpenClaw (first time only)"
 
 # ---------------------------------------------------------------------------
 # Test targets

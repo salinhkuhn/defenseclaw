@@ -103,7 +103,8 @@ class TestPluginCommands(unittest.TestCase):
         self.assertIn("list", result.output)
         self.assertIn("remove", result.output)
 
-    def test_plugin_list_empty(self):
+    @patch("defenseclaw.commands.cmd_plugin._list_openclaw_plugins", return_value=[])
+    def test_plugin_list_empty(self, _mock_oc):
         from defenseclaw.commands.cmd_plugin import list_plugins
         with tempfile.TemporaryDirectory() as tmpdir:
             app = _make_app()
@@ -144,7 +145,7 @@ class TestPluginCommands(unittest.TestCase):
                 app = _make_app()
                 app.cfg.plugin_dir = plugin_dest
                 result = _invoke(install, [plugin_src], app=app)
-                self.assertEqual(result.exit_code, 0)
+                self.assertEqual(result.exit_code, 1)
                 self.assertIn("already installed", result.output)
 
     def test_plugin_remove_success(self):
@@ -167,13 +168,28 @@ class TestPluginCommands(unittest.TestCase):
             self.assertEqual(result.exit_code, 0)
             self.assertIn("not found", result.output)
 
-    def test_plugin_install_from_registry_stub(self):
+    @patch("defenseclaw.scanner.plugin.PluginScannerWrapper.scan")
+    @patch("defenseclaw.registry.fetch_npm_package")
+    def test_plugin_install_from_registry(self, mock_fetch, mock_scan):
         from defenseclaw.commands.cmd_plugin import install
         app = _make_app()
         app.cfg.plugin_dir = tempfile.mkdtemp()
+
+        plugin_src = os.path.join(app.cfg.plugin_dir, "_src", "some-registry-plugin")
+        os.makedirs(plugin_src, exist_ok=True)
+        with open(os.path.join(plugin_src, "plugin.py"), "w") as f:
+            f.write("# code\n")
+        mock_fetch.return_value = plugin_src
+
+        mock_scan.return_value = ScanResult(
+            scanner="plugin-scanner", target=plugin_src,
+            timestamp=datetime.now(timezone.utc),
+            findings=[],
+        )
+
         result = _invoke(install, ["some-registry-plugin"], app=app)
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("not yet implemented", result.output)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Installed plugin", result.output)
 
 
 # ── mcp ───────────────────────────────────────────────────────────────────

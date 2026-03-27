@@ -41,6 +41,7 @@ type Config struct {
 	Gateway        GatewayConfig         `mapstructure:"gateway"          yaml:"gateway"`
 	SkillActions   SkillActionsConfig    `mapstructure:"skill_actions"    yaml:"skill_actions"`
 	MCPActions     MCPActionsConfig      `mapstructure:"mcp_actions"      yaml:"mcp_actions"`
+	PluginActions  PluginActionsConfig   `mapstructure:"plugin_actions"   yaml:"plugin_actions"`
 	OTel           OTelConfig            `mapstructure:"otel"             yaml:"otel"`
 }
 
@@ -172,9 +173,16 @@ type GatewayWatcherSkillConfig struct {
 	Dirs       []string `mapstructure:"dirs"           yaml:"dirs"`
 }
 
+type GatewayWatcherPluginConfig struct {
+	Enabled    bool     `mapstructure:"enabled"      yaml:"enabled"`
+	TakeAction bool     `mapstructure:"take_action"   yaml:"take_action"`
+	Dirs       []string `mapstructure:"dirs"           yaml:"dirs"`
+}
+
 type GatewayWatcherConfig struct {
-	Enabled bool                      `mapstructure:"enabled" yaml:"enabled"`
-	Skill   GatewayWatcherSkillConfig `mapstructure:"skill"   yaml:"skill"`
+	Enabled bool                       `mapstructure:"enabled" yaml:"enabled"`
+	Skill   GatewayWatcherSkillConfig  `mapstructure:"skill"   yaml:"skill"`
+	Plugin  GatewayWatcherPluginConfig `mapstructure:"plugin"  yaml:"plugin"`
 }
 
 type CiscoAIDefenseConfig struct {
@@ -282,6 +290,14 @@ type MCPActionsConfig struct {
 	Info     SeverityAction `mapstructure:"info"     yaml:"info"`
 }
 
+type PluginActionsConfig struct {
+	Critical SeverityAction `mapstructure:"critical" yaml:"critical"`
+	High     SeverityAction `mapstructure:"high"     yaml:"high"`
+	Medium   SeverityAction `mapstructure:"medium"   yaml:"medium"`
+	Low      SeverityAction `mapstructure:"low"      yaml:"low"`
+	Info     SeverityAction `mapstructure:"info"     yaml:"info"`
+}
+
 func Load() (*Config, error) {
 	dataDir := DefaultDataPath()
 	configFile := filepath.Join(dataDir, DefaultConfigName)
@@ -316,6 +332,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.MCPActions.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.PluginActions.Validate(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -424,6 +443,22 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("mcp_actions.info.runtime", string(RuntimeEnable))
 	viper.SetDefault("mcp_actions.info.install", string(InstallNone))
 
+	viper.SetDefault("plugin_actions.critical.file", string(FileActionNone))
+	viper.SetDefault("plugin_actions.critical.runtime", string(RuntimeEnable))
+	viper.SetDefault("plugin_actions.critical.install", string(InstallNone))
+	viper.SetDefault("plugin_actions.high.file", string(FileActionNone))
+	viper.SetDefault("plugin_actions.high.runtime", string(RuntimeEnable))
+	viper.SetDefault("plugin_actions.high.install", string(InstallNone))
+	viper.SetDefault("plugin_actions.medium.file", string(FileActionNone))
+	viper.SetDefault("plugin_actions.medium.runtime", string(RuntimeEnable))
+	viper.SetDefault("plugin_actions.medium.install", string(InstallNone))
+	viper.SetDefault("plugin_actions.low.file", string(FileActionNone))
+	viper.SetDefault("plugin_actions.low.runtime", string(RuntimeEnable))
+	viper.SetDefault("plugin_actions.low.install", string(InstallNone))
+	viper.SetDefault("plugin_actions.info.file", string(FileActionNone))
+	viper.SetDefault("plugin_actions.info.runtime", string(RuntimeEnable))
+	viper.SetDefault("plugin_actions.info.install", string(InstallNone))
+
 	viper.SetDefault("guardrail.enabled", false)
 	viper.SetDefault("guardrail.mode", "observe")
 	viper.SetDefault("guardrail.scanner_mode", "local")
@@ -445,6 +480,9 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("gateway.watcher.skill.enabled", true)
 	viper.SetDefault("gateway.watcher.skill.take_action", false)
 	viper.SetDefault("gateway.watcher.skill.dirs", []string{})
+	viper.SetDefault("gateway.watcher.plugin.enabled", true)
+	viper.SetDefault("gateway.watcher.plugin.take_action", false)
+	viper.SetDefault("gateway.watcher.plugin.dirs", []string{})
 
 	viper.SetDefault("otel.enabled", false)
 	viper.SetDefault("otel.protocol", "grpc")

@@ -77,7 +77,7 @@ func startMockGW(t *testing.T, afterHandshake func(t *testing.T, conn *websocket
 			Type:     "hello-ok",
 			Protocol: 3,
 			Features: &HelloFeatures{
-				Methods: []string{"skills.update", "config.patch", "config.get", "status", "tools.catalog", "exec.approval.resolve"},
+				Methods: []string{"skills.update", "config.patch", "config.set", "config.get", "status", "tools.catalog", "exec.approval.resolve"},
 				Events:  []string{"tool_call", "tool_result", "exec.approval.requested", "tick"},
 			},
 		})
@@ -101,7 +101,11 @@ func rpcEchoLoop(t *testing.T, conn *websocket.Conn) {
 		if err := json.Unmarshal(raw, &req); err != nil {
 			continue
 		}
-		resp, _ := json.Marshal(ResponseFrame{Type: "res", ID: req.ID, OK: true, Payload: json.RawMessage(`{}`)})
+		payload := json.RawMessage(`{}`)
+		if req.Method == "config.get" {
+			payload = json.RawMessage(`{"hash":"test-config-hash","config":{"plugins":{"allow":["existing-a"]}}}`)
+		}
+		resp, _ := json.Marshal(ResponseFrame{Type: "res", ID: req.ID, OK: true, Payload: payload})
 		conn.WriteMessage(websocket.TextMessage, resp)
 	}
 }
@@ -119,7 +123,12 @@ func rpcRecordingLoop(received chan<- receivedRequest) func(*testing.T, *websock
 			}
 			paramsJSON, _ := json.Marshal(req.Params)
 			received <- receivedRequest{Method: req.Method, ID: req.ID, Params: paramsJSON}
-			resp, _ := json.Marshal(ResponseFrame{Type: "res", ID: req.ID, OK: true, Payload: json.RawMessage(`{}`)})
+
+			payload := json.RawMessage(`{}`)
+			if req.Method == "config.get" {
+				payload = json.RawMessage(`{"hash":"test-config-hash","config":{"plugins":{"allow":["existing-a"]}}}`)
+			}
+			resp, _ := json.Marshal(ResponseFrame{Type: "res", ID: req.ID, OK: true, Payload: payload})
 			conn.WriteMessage(websocket.TextMessage, resp)
 		}
 	}
@@ -162,6 +171,48 @@ func drainRPC(t *testing.T, ch <-chan receivedRequest) receivedRequest {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for RPC request")
 		return receivedRequest{}
+	}
+}
+
+// assertPluginConfigPatch validates that the RPC params contain the expected
+// config.patch payload for a plugin enable/disable operation, including the
+// plugins.allow list.
+func assertPluginConfigPatch(t *testing.T, rawParams json.RawMessage, pluginName string, wantEnabled bool) {
+	t.Helper()
+	var params ConfigPatchRawParams
+	json.Unmarshal(rawParams, &params)
+	if params.BaseHash == "" {
+		t.Error("baseHash should not be empty")
+	}
+	var nested map[string]interface{}
+	if err := json.Unmarshal([]byte(params.Raw), &nested); err != nil {
+		t.Fatalf("Raw JSON parse: %v (raw=%q)", err, params.Raw)
+	}
+	plugins, _ := nested["plugins"].(map[string]interface{})
+	entries, _ := plugins["entries"].(map[string]interface{})
+	entry, _ := entries[pluginName].(map[string]interface{})
+	if entry["enabled"] != wantEnabled {
+		t.Errorf("plugins.entries.%s.enabled = %v, want %v", pluginName, entry["enabled"], wantEnabled)
+	}
+
+	allowRaw, ok := plugins["allow"].([]interface{})
+	if !ok {
+		t.Fatal("plugins.allow should be an array")
+	}
+	allowSet := make(map[string]bool)
+	for _, v := range allowRaw {
+		if s, ok := v.(string); ok {
+			allowSet[s] = true
+		}
+	}
+	if wantEnabled && !allowSet[pluginName] {
+		t.Errorf("plugins.allow should contain %q when enabling", pluginName)
+	}
+	if !wantEnabled && allowSet[pluginName] {
+		t.Errorf("plugins.allow should not contain %q when disabling", pluginName)
+	}
+	if !allowSet["existing-a"] {
+		t.Error("plugins.allow should preserve existing entries (existing-a)")
 	}
 }
 
@@ -384,6 +435,50 @@ func TestEnableSkillRPC(t *testing.T) {
 	if !params.Enabled {
 		t.Error("Enabled should be true for enable")
 	}
+}
+
+func TestDisablePluginRPC(t *testing.T) {
+	received := make(chan receivedRequest, 5)
+	srv := startMockGW(t, rpcRecordingLoop(received))
+	client := connectToMockGW(t, srv)
+
+	ctx := context.Background()
+	if err := client.DisablePlugin(ctx, "bad-plugin"); err != nil {
+		t.Fatalf("DisablePlugin: %v", err)
+	}
+
+	configGet := drainRPC(t, received)
+	if configGet.Method != "config.get" {
+		t.Errorf("first RPC Method = %q, want config.get", configGet.Method)
+	}
+
+	configPatch := drainRPC(t, received)
+	if configPatch.Method != "config.patch" {
+		t.Errorf("second RPC Method = %q, want config.patch", configPatch.Method)
+	}
+	assertPluginConfigPatch(t, configPatch.Params, "bad-plugin", false)
+}
+
+func TestEnablePluginRPC(t *testing.T) {
+	received := make(chan receivedRequest, 5)
+	srv := startMockGW(t, rpcRecordingLoop(received))
+	client := connectToMockGW(t, srv)
+
+	ctx := context.Background()
+	if err := client.EnablePlugin(ctx, "good-plugin"); err != nil {
+		t.Fatalf("EnablePlugin: %v", err)
+	}
+
+	configGet := drainRPC(t, received)
+	if configGet.Method != "config.get" {
+		t.Errorf("first RPC Method = %q, want config.get", configGet.Method)
+	}
+
+	configPatch := drainRPC(t, received)
+	if configPatch.Method != "config.patch" {
+		t.Errorf("second RPC Method = %q, want config.patch", configPatch.Method)
+	}
+	assertPluginConfigPatch(t, configPatch.Params, "good-plugin", true)
 }
 
 func TestGetConfigRPC(t *testing.T) {
@@ -1003,4 +1098,228 @@ func TestHandleAdmissionResultWarningVerdict(t *testing.T) {
 		Verdict: watcher.VerdictWarning,
 		Reason:  "medium findings",
 	})
+}
+
+func TestHandlePluginAdmissionBlocked(t *testing.T) {
+	received := make(chan receivedRequest, 5)
+	srv := startMockGW(t, rpcRecordingLoop(received))
+	client := connectToMockGW(t, srv)
+	_, logger := testStoreAndLogger(t)
+
+	s := &Sidecar{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				Watcher: config.GatewayWatcherConfig{
+					Plugin: config.GatewayWatcherPluginConfig{TakeAction: true},
+				},
+			},
+		},
+		client: client,
+		logger: logger,
+	}
+
+	s.handleAdmissionResult(watcher.AdmissionResult{
+		Event: watcher.InstallEvent{
+			Type: watcher.InstallPlugin,
+			Name: "malicious-plugin",
+			Path: "/path/to/plugin",
+		},
+		Verdict: watcher.VerdictBlocked,
+		Reason:  "on block list",
+	})
+
+	configGet := drainRPC(t, received)
+	if configGet.Method != "config.get" {
+		t.Errorf("first RPC Method = %q, want config.get", configGet.Method)
+	}
+	configPatch := drainRPC(t, received)
+	if configPatch.Method != "config.patch" {
+		t.Errorf("second RPC Method = %q, want config.patch", configPatch.Method)
+	}
+	assertPluginConfigPatch(t, configPatch.Params, "malicious-plugin", false)
+}
+
+func TestHandlePluginAdmissionNoTakeAction(t *testing.T) {
+	_, logger := testStoreAndLogger(t)
+
+	s := &Sidecar{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				Watcher: config.GatewayWatcherConfig{
+					Plugin: config.GatewayWatcherPluginConfig{TakeAction: false},
+				},
+			},
+		},
+		logger: logger,
+	}
+
+	s.handleAdmissionResult(watcher.AdmissionResult{
+		Event: watcher.InstallEvent{
+			Type: watcher.InstallPlugin,
+			Name: "some-plugin",
+		},
+		Verdict: watcher.VerdictBlocked,
+		Reason:  "on block list",
+	})
+}
+
+func TestAPIPluginDisableGatewayError(t *testing.T) {
+	srv := startMockGW(t, func(t *testing.T, conn *websocket.Conn) {
+		for {
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req RequestFrame
+			json.Unmarshal(raw, &req)
+			resp, _ := json.Marshal(ResponseFrame{
+				Type: "res", ID: req.ID, OK: false,
+				Error: &FrameError{Code: "INTERNAL", Message: "server error"},
+			})
+			conn.WriteMessage(websocket.TextMessage, resp)
+		}
+	})
+	client := connectToMockGW(t, srv)
+	_, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), client: client, logger: logger}
+
+	body, _ := json.Marshal(pluginActionRequest{PluginName: "fail-plugin"})
+	req := httptest.NewRequest(http.MethodPost, "/plugin/disable", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handlePluginDisable(w, req)
+
+	if w.Result().StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusBadGateway)
+	}
+}
+
+func TestAPIPluginEnableGatewayError(t *testing.T) {
+	srv := startMockGW(t, func(t *testing.T, conn *websocket.Conn) {
+		for {
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req RequestFrame
+			json.Unmarshal(raw, &req)
+			resp, _ := json.Marshal(ResponseFrame{
+				Type: "res", ID: req.ID, OK: false,
+				Error: &FrameError{Code: "INTERNAL", Message: "server error"},
+			})
+			conn.WriteMessage(websocket.TextMessage, resp)
+		}
+	})
+	client := connectToMockGW(t, srv)
+	_, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), client: client, logger: logger}
+
+	body, _ := json.Marshal(pluginActionRequest{PluginName: "fail-plugin"})
+	req := httptest.NewRequest(http.MethodPost, "/plugin/enable", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handlePluginEnable(w, req)
+
+	if w.Result().StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusBadGateway)
+	}
+}
+
+func TestDisablePluginRPCError(t *testing.T) {
+	srv := startMockGW(t, func(t *testing.T, conn *websocket.Conn) {
+		for {
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req RequestFrame
+			json.Unmarshal(raw, &req)
+			resp, _ := json.Marshal(ResponseFrame{
+				Type: "res", ID: req.ID, OK: false,
+				Error: &FrameError{Code: "FORBIDDEN", Message: "access denied"},
+			})
+			conn.WriteMessage(websocket.TextMessage, resp)
+		}
+	})
+	client := connectToMockGW(t, srv)
+
+	ctx := context.Background()
+	err := client.DisablePlugin(ctx, "test-plugin")
+	if err == nil {
+		t.Fatal("expected error for rejected RPC")
+	}
+	if !strings.Contains(err.Error(), "access denied") {
+		t.Errorf("error should contain 'access denied', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "test-plugin") {
+		t.Errorf("error should contain plugin name, got: %v", err)
+	}
+}
+
+func TestEnablePluginRPCError(t *testing.T) {
+	srv := startMockGW(t, func(t *testing.T, conn *websocket.Conn) {
+		for {
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req RequestFrame
+			json.Unmarshal(raw, &req)
+			resp, _ := json.Marshal(ResponseFrame{
+				Type: "res", ID: req.ID, OK: false,
+				Error: &FrameError{Code: "FORBIDDEN", Message: "access denied"},
+			})
+			conn.WriteMessage(websocket.TextMessage, resp)
+		}
+	})
+	client := connectToMockGW(t, srv)
+
+	ctx := context.Background()
+	err := client.EnablePlugin(ctx, "test-plugin")
+	if err == nil {
+		t.Fatal("expected error for rejected RPC")
+	}
+	if !strings.Contains(err.Error(), "access denied") {
+		t.Errorf("error should contain 'access denied', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "test-plugin") {
+		t.Errorf("error should contain plugin name, got: %v", err)
+	}
+}
+
+func TestHandlePluginAdmissionRejected(t *testing.T) {
+	received := make(chan receivedRequest, 5)
+	srv := startMockGW(t, rpcRecordingLoop(received))
+	client := connectToMockGW(t, srv)
+	_, logger := testStoreAndLogger(t)
+
+	s := &Sidecar{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				Watcher: config.GatewayWatcherConfig{
+					Plugin: config.GatewayWatcherPluginConfig{TakeAction: true},
+				},
+			},
+		},
+		client: client,
+		logger: logger,
+	}
+
+	s.handleAdmissionResult(watcher.AdmissionResult{
+		Event: watcher.InstallEvent{
+			Type: watcher.InstallPlugin,
+			Name: "rejected-plugin",
+			Path: "/path/to/plugin",
+		},
+		Verdict: watcher.VerdictRejected,
+		Reason:  "scan found CRITICAL findings",
+	})
+
+	configGet := drainRPC(t, received)
+	if configGet.Method != "config.get" {
+		t.Errorf("first RPC Method = %q, want config.get", configGet.Method)
+	}
+	configPatch := drainRPC(t, received)
+	if configPatch.Method != "config.patch" {
+		t.Errorf("second RPC Method = %q, want config.patch", configPatch.Method)
+	}
+	assertPluginConfigPatch(t, configPatch.Params, "rejected-plugin", false)
 }

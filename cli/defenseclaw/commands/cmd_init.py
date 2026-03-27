@@ -260,6 +260,10 @@ def _setup_gateway_defaults(cfg, logger, is_new_config: bool = True) -> None:
     click.echo(f"  Watcher:       enabled={cfg.gateway.watcher.enabled}")
     click.echo(f"  Skill watch:   enabled={cfg.gateway.watcher.skill.enabled}, "
                f"take_action={cfg.gateway.watcher.skill.take_action}")
+    plugin_dirs = cfg.gateway.watcher.plugin.dirs or cfg.plugin_dirs()
+    click.echo(f"  Plugin watch:  enabled={cfg.gateway.watcher.plugin.enabled}, "
+               f"take_action={cfg.gateway.watcher.plugin.take_action}")
+    click.echo(f"  Plugin dirs:   {', '.join(plugin_dirs)}")
     click.echo(f"  Device key:    {cfg.gateway.device_key_file}")
     click.echo()
     click.echo("  Run 'defenseclaw setup gateway' to customize.")

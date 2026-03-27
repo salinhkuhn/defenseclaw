@@ -65,6 +65,24 @@ class OrchestratorClient:
         resp.raise_for_status()
         return resp.json()
 
+    def disable_plugin(self, plugin_name: str) -> dict[str, Any]:
+        resp = self._session.post(
+            f"{self.base_url}/plugin/disable",
+            json={"pluginName": plugin_name},
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def enable_plugin(self, plugin_name: str) -> dict[str, Any]:
+        resp = self._session.post(
+            f"{self.base_url}/plugin/enable",
+            json={"pluginName": plugin_name},
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def scan_skill(self, target: str, name: str = "") -> dict[str, Any]:
         """Request a skill scan on the remote sidecar host.
 

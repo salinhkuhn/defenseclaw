@@ -103,10 +103,37 @@ type SkillsUpdateParams struct {
 	Enabled  bool   `json:"enabled"`
 }
 
-// ConfigPatchParams is the params for config.patch RPC.
+// ConfigPatchParams is the legacy params for config.patch RPC (path/value style).
+// Note: OpenClaw's config.patch actually expects { raw, baseHash } — see
+// ConfigPatchRawParams. This struct is kept for the PatchConfig helper but
+// will fail against real OpenClaw gateways.
 type ConfigPatchParams struct {
 	Path  string      `json:"path"`
 	Value interface{} `json:"value"`
+}
+
+// ConfigPatchRawParams is the params for config.patch RPC using the raw
+// merge format. OpenClaw expects { raw: "<JSON string>", baseHash: "<sha256>" }.
+// Unlike config.set (which replaces the entire config), config.patch performs
+// a deep merge into the existing config.
+type ConfigPatchRawParams struct {
+	Raw      string `json:"raw"`
+	BaseHash string `json:"baseHash,omitempty"`
+}
+
+// configGetResponse extracts the hash and config from a config.get response.
+// OpenClaw nests the actual config under a "config" key in the payload.
+type configGetResponse struct {
+	Hash   string            `json:"hash"`
+	Config *configGetInner   `json:"config,omitempty"`
+}
+
+type configGetInner struct {
+	Plugins *configPlugins `json:"plugins,omitempty"`
+}
+
+type configPlugins struct {
+	Allow []string `json:"allow,omitempty"`
 }
 
 // RawFrame is used for initial JSON parsing to determine frame type.

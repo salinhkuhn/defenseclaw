@@ -1,24 +1,26 @@
-"""Plugin scanner — shells out to defenseclaw-plugin-scanner (Node.js).
-
-The scanner lives in extensions/defenseclaw and is installed as a Node binary.
-Supports the same LLM flags as the skill scanner (reads from skill_scanner config).
-"""
+"""Plugin scanner."""
 
 from __future__ import annotations
 
-import json
-import subprocess
-import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 from defenseclaw.models import Finding, ScanResult
+from defenseclaw.scanner.plugin_scanner import scan_plugin
+from defenseclaw.scanner.plugin_scanner.types import (
+    PluginScanOptions,
+)
+from defenseclaw.scanner.plugin_scanner.types import (
+    ScanResult as PluginScanResult,
+)
 
 SCANNER_NAME = "defenseclaw-plugin-scanner"
 
 
 class PluginScannerWrapper:
     def __init__(self, binary: str = SCANNER_NAME) -> None:
-        self.binary = binary
+        # binary param kept for backward-compat but no longer used
+        self._binary = binary
 
     def name(self) -> str:
         return "plugin-scanner"
@@ -37,89 +39,36 @@ class PluginScannerWrapper:
         disable_meta: bool = False,
         lenient: bool = False,
     ) -> ScanResult:
-        import time
-
         start = time.monotonic()
 
-        args = [self.binary, target]
+        # Map CLI flags to PluginScanOptions
+        options = PluginScanOptions()
         if policy:
-            args.extend(["--policy", policy])
+            options.policy = policy
+        elif lenient:
+            options.policy = "permissive"
         if profile:
-            args.extend(["--profile", profile])
-        if use_llm:
-            args.append("--use-llm")
-            if llm_model:
-                args.extend(["--llm-model", llm_model])
-            if llm_provider:
-                args.extend(["--llm-provider", llm_provider])
-            if llm_consensus_runs > 0:
-                args.extend(["--llm-consensus-runs", str(llm_consensus_runs)])
-        if disable_meta:
-            args.append("--no-meta")
-        if lenient:
-            args.append("--lenient")
+            options.profile = profile
 
-        # Set up environment:
-        # - PYTHONPATH so the Node binary can find cli/defenseclaw/llm.py (litellm bridge)
-        # - SKILL_SCANNER_LLM_API_KEY for the LLM API key
-        import os
-        cli_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        existing_pythonpath = os.environ.get("PYTHONPATH", "")
-        pythonpath = f"{cli_dir}:{existing_pythonpath}" if existing_pythonpath else cli_dir
-        env = {**os.environ, "PYTHONPATH": pythonpath}
-        if llm_api_key:
-            env["SKILL_SCANNER_LLM_API_KEY"] = llm_api_key
-
-        try:
-            proc = subprocess.run(
-                args,
-                capture_output=True,
-                text=True,
-                timeout=300,  # longer timeout when LLM is enabled
-                env=env,
-            )
-        except FileNotFoundError:
-            print(
-                f"error: {self.binary} not found.\n"
-                "  Build and link the extension:\n"
-                "    cd extensions/defenseclaw && npm run build && npm link",
-                file=sys.stderr,
-            )
-            raise SystemExit(1)
+        # Run the scanner
+        result: PluginScanResult = scan_plugin(target, options)
 
         elapsed = time.monotonic() - start
+
+        # Convert rich plugin_scanner.Finding -> models.Finding
         findings: list[Finding] = []
-
-        if proc.stdout.strip():
-            try:
-                # The TS plugin scanner outputs a full ScanResult object with
-                # scanner, target, timestamp, findings[], duration_ns, metadata,
-                # and assessment fields (see extensions/defenseclaw/src/types.ts).
-                data = json.loads(proc.stdout)
-                for f in data.get("findings", []):
-                    if f.get("suppressed", False):
-                        continue
-                    findings.append(Finding(
-                        id=f.get("id", ""),
-                        severity=f.get("severity", "INFO"),
-                        title=f.get("title", ""),
-                        description=f.get("description", ""),
-                        location=f.get("location", ""),
-                        remediation=f.get("remediation", ""),
-                        scanner="plugin-scanner",
-                        tags=f.get("tags", []),
-                    ))
-            except json.JSONDecodeError:
-                pass
-
-        if proc.returncode != 0 and not findings:
-            stderr_msg = proc.stderr.strip()[:200] if proc.stderr else "unknown error"
+        for f in result.findings:
+            if getattr(f, "suppressed", False):
+                continue
             findings.append(Finding(
-                id="scanner-error",
-                severity="ERROR",
-                title=f"Plugin scanner exited with code {proc.returncode}",
-                description=stderr_msg,
+                id=f.id,
+                severity=f.severity,
+                title=f.title,
+                description=f.description,
+                location=f.location or "",
+                remediation=f.remediation or "",
                 scanner="plugin-scanner",
+                tags=list(f.tags) if f.tags else [],
             ))
 
         return ScanResult(

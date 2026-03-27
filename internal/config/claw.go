@@ -164,6 +164,13 @@ func (c *Config) SkillDirs() []string {
 	return dedup(dirs)
 }
 
+// PluginDirs returns the plugin directories for the active claw mode.
+// For OpenClaw, plugins (extensions) live under claw_home/extensions.
+func (c *Config) PluginDirs() []string {
+	homeDir := expandPath(c.Claw.HomeDir)
+	return []string{filepath.Join(homeDir, "extensions")}
+}
+
 // InstalledSkillCandidates returns possible on-disk paths for a named skill,
 // ordered by the claw mode's resolution priority.
 func (c *Config) InstalledSkillCandidates(skillName string) []string {

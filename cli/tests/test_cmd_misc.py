@@ -1,5 +1,6 @@
 """Tests for miscellaneous CLI commands — status, alerts, setup, aibom."""
 
+import json
 import os
 import tempfile
 import unittest
@@ -145,6 +146,110 @@ class TestAlertsCommand(unittest.TestCase):
         result = self.runner.invoke(alerts, [], obj=self.app, catch_exceptions=False)
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("No audit store", result.output)
+
+
+# ---------------------------------------------------------------------------
+# AIBOM command
+# ---------------------------------------------------------------------------
+
+class TestAIBOMCommand(unittest.TestCase):
+    def setUp(self):
+        self.app, self.tmp_dir, self.db_path = make_app_context()
+        self.runner = CliRunner()
+
+    def tearDown(self):
+        cleanup_app(self.app, self.db_path, self.tmp_dir)
+
+    def _make_inventory(self, skills=None):
+        return {
+            "version": 3,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "openclaw_config": "~/.openclaw/openclaw.json",
+            "claw_home": "/tmp/claw",
+            "claw_mode": "openclaw",
+            "live": True,
+            "skills": skills or [],
+            "plugins": [],
+            "mcp": [],
+            "agents": [],
+            "tools": [],
+            "model_providers": [],
+            "memory": [],
+            "errors": [],
+            "summary": {"total_items": 0, "skills": {"count": 0, "eligible": 0},
+                         "plugins": {"count": 0, "loaded": 0, "disabled": 0},
+                         "mcp": {"count": 0}, "agents": {"count": 0},
+                         "tools": {"count": 0}, "model_providers": {"count": 0},
+                         "memory": {"count": 0}, "errors": 0},
+        }
+
+    @patch("defenseclaw.inventory.claw_inventory.enrich_with_policy")
+    @patch("defenseclaw.inventory.claw_inventory.claw_aibom_to_scan_result")
+    @patch("defenseclaw.inventory.claw_inventory.build_claw_aibom")
+    def test_scan_aibom(self, mock_build, mock_to_scan, mock_enrich):
+        from defenseclaw.commands.cmd_aibom import aibom
+        from defenseclaw.models import Finding, ScanResult
+
+        inv = self._make_inventory(skills=[{"id": "test-skill", "eligible": True}])
+        mock_build.return_value = inv
+        mock_to_scan.return_value = ScanResult(
+            scanner="aibom-claw",
+            target="~/.openclaw/openclaw.json",
+            timestamp=datetime.now(timezone.utc),
+            findings=[
+                Finding(id="claw-aibom-skills", severity="INFO", title="Skills (1)",
+                        description="[]", scanner="aibom-claw"),
+            ],
+        )
+
+        result = self.runner.invoke(aibom, ["scan"], obj=self.app, catch_exceptions=False)
+        self.assertEqual(result.exit_code, 0, result.output)
+        mock_build.assert_called_once()
+
+    @patch("defenseclaw.inventory.claw_inventory.enrich_with_policy")
+    @patch("defenseclaw.inventory.claw_inventory.claw_aibom_to_scan_result")
+    @patch("defenseclaw.inventory.claw_inventory.build_claw_aibom")
+    def test_scan_json_output(self, mock_build, mock_to_scan, mock_enrich):
+        from defenseclaw.commands.cmd_aibom import aibom
+        from defenseclaw.models import ScanResult
+
+        inv = self._make_inventory()
+        mock_build.return_value = inv
+        mock_to_scan.return_value = ScanResult(
+            scanner="aibom-claw",
+            target="~/.openclaw/openclaw.json",
+            timestamp=datetime.now(timezone.utc),
+            findings=[],
+        )
+
+        result = self.runner.invoke(
+            aibom, ["scan", "--json"],
+            obj=self.app, catch_exceptions=False,
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        json_start = result.output.index("{")
+        data = json.loads(result.output[json_start:])
+        self.assertIn("version", data)
+
+    @patch("defenseclaw.inventory.claw_inventory.enrich_with_policy")
+    @patch("defenseclaw.inventory.claw_inventory.claw_aibom_to_scan_result")
+    @patch("defenseclaw.inventory.claw_inventory.build_claw_aibom")
+    def test_scan_logs_scan(self, mock_build, mock_to_scan, mock_enrich):
+        from defenseclaw.commands.cmd_aibom import aibom
+        from defenseclaw.models import ScanResult
+
+        inv = self._make_inventory()
+        mock_build.return_value = inv
+        mock_to_scan.return_value = ScanResult(
+            scanner="aibom-claw",
+            target="~/.openclaw/openclaw.json",
+            timestamp=datetime.now(timezone.utc),
+            findings=[],
+        )
+
+        self.runner.invoke(aibom, ["scan"], obj=self.app, catch_exceptions=False)
+        counts = self.app.store.get_counts()
+        self.assertEqual(counts.total_scans, 1)
 
 
 # ---------------------------------------------------------------------------
