@@ -32,6 +32,7 @@ from defenseclaw.commands.cmd_plugin import (
     _build_plugin_actions_map,
     _build_plugin_scan_map,
     _resolve_openclaw_plugin_id,
+    _resolve_plugin_dir,
     plugin,
 )
 from defenseclaw.enforce import PolicyEngine
@@ -925,6 +926,128 @@ class TestPluginRegistryInstall(PluginCommandTestBase):
         actions = [c[0] for c in log_calls]
         self.assertIn("install-clean", actions)
         self.assertIn("plugin-install", actions)
+
+
+class TestResolvePluginDir(unittest.TestCase):
+    """Unit tests for _resolve_plugin_dir — OpenClaw source-path resolution."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.plugin_dir = os.path.join(self.tmp, "plugins")
+        os.makedirs(self.plugin_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _make_plugin_root(self, *parts, manifest="package.json"):
+        """Create a fake plugin root directory with a manifest file."""
+        root = os.path.join(self.tmp, *parts)
+        os.makedirs(root, exist_ok=True)
+        with open(os.path.join(root, manifest), "w") as f:
+            f.write('{"name": "test-plugin"}')
+        return root
+
+    def _mock_info(self, source_path):
+        return {"id": "test", "source": source_path}
+
+    # ------------------------------------------------------------------
+    # Literal path passthrough
+    # ------------------------------------------------------------------
+
+    def test_literal_directory_returned_as_is(self):
+        root = self._make_plugin_root("myplugin")
+        self.assertEqual(_resolve_plugin_dir(root, self.plugin_dir), root)
+
+    def test_nonexistent_literal_path_falls_through(self):
+        self.assertIsNone(
+            _resolve_plugin_dir("/does/not/exist", self.plugin_dir)
+        )
+
+    # ------------------------------------------------------------------
+    # DefenseClaw plugin_dir subdirectory
+    # ------------------------------------------------------------------
+
+    def test_subdirectory_under_plugin_dir(self):
+        dest = os.path.join(self.plugin_dir, "myplugin")
+        os.makedirs(dest)
+        self.assertEqual(_resolve_plugin_dir("myplugin", self.plugin_dir), dest)
+
+    # ------------------------------------------------------------------
+    # OpenClaw resolution: source is a file — dirname fallback
+    # ------------------------------------------------------------------
+
+    @patch("defenseclaw.commands.cmd_plugin._get_openclaw_plugin_info")
+    def test_resolves_root_when_source_is_file_in_plugin_dir(self, mock_info):
+        """source points to a file directly in the plugin root — returns parent dir."""
+        root = self._make_plugin_root("whatsapp")
+        source = os.path.join(root, "index.ts")
+        open(source, "w").close()
+        mock_info.return_value = self._mock_info(source)
+
+        result = _resolve_plugin_dir("whatsapp", self.plugin_dir)
+        self.assertEqual(result, root)
+
+    @patch("defenseclaw.commands.cmd_plugin._get_openclaw_plugin_info")
+    def test_resolves_root_when_source_is_file_in_dist_subdir(self, mock_info):
+        """source is dist/index.js — walks up past dist/ to find package.json."""
+        root = self._make_plugin_root("defenseclaw")
+        dist = os.path.join(root, "dist")
+        os.makedirs(dist)
+        source = os.path.join(dist, "index.js")
+        open(source, "w").close()
+        mock_info.return_value = self._mock_info(source)
+
+        result = _resolve_plugin_dir("defenseclaw", self.plugin_dir)
+        self.assertEqual(result, root)
+
+    @patch("defenseclaw.commands.cmd_plugin._get_openclaw_plugin_info")
+    def test_accepts_openclaw_plugin_json_as_manifest_sentinel(self, mock_info):
+        """openclaw.plugin.json also counts as a valid plugin root marker."""
+        root = self._make_plugin_root("myplug", manifest="openclaw.plugin.json")
+        dist = os.path.join(root, "dist")
+        os.makedirs(dist)
+        source = os.path.join(dist, "index.js")
+        open(source, "w").close()
+        mock_info.return_value = self._mock_info(source)
+
+        result = _resolve_plugin_dir("myplug", self.plugin_dir)
+        self.assertEqual(result, root)
+
+    @patch("defenseclaw.commands.cmd_plugin._get_openclaw_plugin_info")
+    def test_returns_none_when_no_manifest_found_in_tree(self, mock_info):
+        """No package.json or openclaw.plugin.json anywhere — returns None."""
+        orphan = os.path.join(self.tmp, "orphan", "dist")
+        os.makedirs(orphan)
+        source = os.path.join(orphan, "index.js")
+        open(source, "w").close()
+        mock_info.return_value = self._mock_info(source)
+
+        result = _resolve_plugin_dir("orphan", self.plugin_dir)
+        self.assertIsNone(result)
+
+    # ------------------------------------------------------------------
+    # Case-insensitive fallback
+    # ------------------------------------------------------------------
+
+    @patch("defenseclaw.commands.cmd_plugin._get_openclaw_plugin_info")
+    def test_case_insensitive_fallback_to_lowercase(self, mock_info):
+        """Uppercase name fails first; lowercase succeeds on retry."""
+        root = self._make_plugin_root("whatsapp")
+        source = os.path.join(root, "index.ts")
+        open(source, "w").close()
+
+        def info_side_effect(name):
+            return self._mock_info(source) if name == "whatsapp" else None
+
+        mock_info.side_effect = info_side_effect
+
+        result = _resolve_plugin_dir("Whatsapp", self.plugin_dir)
+        self.assertEqual(result, root)
+
+    @patch("defenseclaw.commands.cmd_plugin._get_openclaw_plugin_info")
+    def test_no_fallback_when_lowercase_also_fails(self, mock_info):
+        mock_info.return_value = None
+        self.assertIsNone(_resolve_plugin_dir("Unknown", self.plugin_dir))
 
 
 if __name__ == "__main__":

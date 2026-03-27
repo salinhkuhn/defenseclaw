@@ -622,11 +622,22 @@ def _resolve_plugin_dir(name_or_path: str, plugin_dir: str) -> str | None:
     if os.path.isdir(candidate):
         return candidate
 
-    info = _get_openclaw_plugin_info(name_or_path)
-    if info:
-        root = info.get("rootDir") or info.get("source", "")
-        if root and os.path.isdir(root):
-            return root
+    for lookup in dict.fromkeys([name_or_path, name_or_path.lower()]):
+        info = _get_openclaw_plugin_info(lookup)
+        if info:
+            root = info.get("rootDir") or info.get("source", "")
+            if root:
+                if os.path.isdir(root):
+                    return root
+                # source is a file — walk up to find the plugin root
+                # (directory containing package.json or openclaw.plugin.json)
+                check = os.path.dirname(root)
+                while check and check != os.path.dirname(check):
+                    if any(os.path.isfile(os.path.join(check, m))
+                           for m in ("package.json", "openclaw.plugin.json")):
+                        return check
+                    check = os.path.dirname(check)
+            break
 
     return None
 
