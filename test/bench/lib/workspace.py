@@ -14,8 +14,13 @@ def clean_workspace(workspace: Path, logs_dir: Path) -> None:
     """Remove and recreate workspace and logs directories."""
     for d in [workspace, logs_dir]:
         if d.exists():
-            shutil.rmtree(d)
-        d.mkdir(parents=True)
+            for item in d.iterdir():
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+        else:
+            d.mkdir(parents=True)
     # Standard subdirs expected by openclawbench test scripts
     (logs_dir / "verifier").mkdir(parents=True, exist_ok=True)
     (logs_dir / "agent").mkdir(parents=True, exist_ok=True)
