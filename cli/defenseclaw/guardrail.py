@@ -293,6 +293,8 @@ def detect_api_key_env(model: str) -> str:
         return "GOOGLE_API_KEY"
     if "bedrock" in lower:
         return "AWS_ACCESS_KEY_ID"
+    if "openrouter" in lower:
+        return "OPENROUTER_API_KEY"
     return "LLM_API_KEY"
 
 

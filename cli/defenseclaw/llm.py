@@ -56,11 +56,17 @@ def _resolve_provider(model: str, provider_hint: str = "") -> tuple[str, str]:
     ``anthropic/claude-sonnet-4-20250514`` and bare names like ``claude-sonnet-4-20250514``.
     """
     if provider_hint:
+        hint = provider_hint.lower()
+        if hint == "openrouter":
+            # OpenRouter models need their full vendor/model path preserved.
+            return "openrouter", model
         bare = model.split("/", 1)[-1] if "/" in model else model
-        return provider_hint.lower(), bare
+        return hint, bare
 
     if "/" in model:
         prefix, bare = model.split("/", 1)
+        if prefix.lower() == "openrouter":
+            return "openrouter", bare
         return prefix.lower(), bare
 
     lower = model.lower()
@@ -70,6 +76,8 @@ def _resolve_provider(model: str, provider_hint: str = "") -> tuple[str, str]:
         return "openai", model
     if lower.startswith("gemini"):
         return "google", model
+    if lower.startswith("openrouter"):
+        return "openrouter", model
 
     return "openai", model
 
@@ -204,7 +212,9 @@ def call_llm(request: dict) -> dict:
     provider_hint = request.get("provider", "")
 
     provider, bare_model = _resolve_provider(model, provider_hint)
-
+    if provider == "openrouter" and not api_base:
+        api_base = "https://openrouter.ai/api/v1"
+        
     try:
         if provider == "anthropic":
             return _call_anthropic(bare_model, messages, max_tokens, temperature, api_key, api_base)
