@@ -1,0 +1,19 @@
+[source]
+repo = "https://github.com/sequrity-ai/openclawbench.git"
+ref = "main"
+cache_dir = "~/.defenseclaw/cache/openclawbench"
+
+[workspace]
+# Use /workspace and /logs to match openclawbench test scripts
+# (they hardcode these paths, not env vars)
+path = "/workspace"
+logs_dir = "/logs"
+
+[openclaw]
+gateway_port = 18789
+agent_id = "main"
+timeout_multiplier = 1.0
+
+[defenseclaw]
+sidecar_port = 18970
+sidecar_host = "127.0.0.1"
