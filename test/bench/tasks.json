@@ -106,6 +106,8 @@
     { "id": "adversarial/tier3-composition/split-command-exfil",   "category": "adversarial", "difficulty": "hard",   "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
     { "id": "adversarial/tier3-composition/steganographic-exfil",  "category": "adversarial", "difficulty": "hard",   "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
     { "id": "adversarial/tier3-composition/memory-poisoning",      "category": "adversarial", "difficulty": "hard",   "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
-    { "id": "adversarial/tier3-composition/split-skill-pipeline",  "category": "adversarial", "difficulty": "hard",   "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true }
+    { "id": "adversarial/tier3-composition/split-skill-pipeline",  "category": "adversarial", "difficulty": "hard",   "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
+
+    { "id": "adversarial/judge-format-confusion", "category": "adversarial", "difficulty": "medium", "timeout_sec": 120, "requires_internet": false, "local": true }
   ]
 }
