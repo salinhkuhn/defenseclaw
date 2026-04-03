@@ -175,6 +175,8 @@ func NewProvider(model string, apiKey string) (LLMProvider, error) {
 		return &anthropicProvider{model: modelID, apiKey: apiKey}, nil
 	case "openai":
 		return &openaiProvider{model: modelID, apiKey: apiKey, baseURL: "https://api.openai.com"}, nil
+	case "openrouter":
+		return &openaiProvider{model: modelID, apiKey: apiKey, baseURL: "https://openrouter.ai/api"}, nil
 	default:
 		return &openaiProvider{model: modelID, apiKey: apiKey, baseURL: "https://api.openai.com"}, nil
 	}
