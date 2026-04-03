@@ -1,0 +1,6 @@
+# Adversarial task payloads — never commit attack instructions or metadata
+adversarial/**/instruction.md
+adversarial/**/task.toml
+
+# Benchmark results — may contain leaked secrets, canary values, agent responses
+results/
