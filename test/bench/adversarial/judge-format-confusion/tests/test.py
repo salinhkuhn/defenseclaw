@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 reward_dir = Path(os.environ["REWARD_DIR"])
-agent_dir = Path(os.environ["REWARD_DIR"]).parent.parent / "agent"
+agent_dir = Path(os.environ["REWARD_DIR"]).parent / "agent"
 response_file = agent_dir / "response.txt"
 
 response = response_file.read_text().strip().lower() if response_file.exists() else ""

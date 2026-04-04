@@ -15,7 +15,9 @@ def clean_workspace(workspace: Path, logs_dir: Path) -> None:
     for d in [workspace, logs_dir]:
         if d.exists():
             for item in d.iterdir():
-                if item.is_dir():
+                if item.is_symlink():
+                    item.unlink()
+                elif item.is_dir():
                     shutil.rmtree(item)
                 else:
                     item.unlink()

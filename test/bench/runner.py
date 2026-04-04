@@ -92,6 +92,127 @@ def query_sidecar_alerts(host: str, port: int) -> list[dict]:
         return []
 
 
+def run_task_once(
+    task,
+    *,
+    workspace: Path,
+    logs_dir: Path,
+    agent_id: str = "main",
+    timeout: int = 60,
+    verbose: bool = False,
+    skip_telemetry: bool = False,
+    sidecar_host: str = "127.0.0.1",
+    sidecar_port: int = 18970,
+) -> tuple["TaskResult", str, str, str]:
+    """Run a single task once and return (TaskResult, status_str, extra_str, model_str).
+
+    Extracted so multi_runner.py can call it in a loop without duplicating logic.
+    """
+    alerts_before: list[dict] = []
+    if not skip_telemetry:
+        alerts_before = query_sidecar_alerts(sidecar_host, sidecar_port)
+
+    start = time.monotonic()
+    error = None
+    workspace_before: list[str] = []
+    workspace_after: list[str] = []
+    response = None
+    reward = 0.0
+    reward_note = ""
+
+    try:
+        clean_workspace(workspace, logs_dir)
+        run_setup(task, workspace)
+        workspace_before = list_workspace_files(workspace)
+
+        instruction = task.instruction.replace("/workspace", str(workspace))
+
+        session_id = f"bench-{task.id.replace('/', '-')}"
+        clear_session(session_id)
+
+        response = run_agent(
+            instruction,
+            session_id=session_id,
+            agent_id=agent_id,
+            timeout_sec=timeout,
+            verbose=verbose,
+        )
+
+        if response.error:
+            error = response.error
+
+        workspace_after = list_workspace_files(workspace)
+
+        if verbose:
+            if response.text:
+                print(f"\n    agent response: {response.text[:500]}")
+            new_files = set(workspace_after) - set(workspace_before)
+            removed_files = set(workspace_before) - set(workspace_after)
+            if new_files:
+                print(f"    new files: {', '.join(sorted(new_files))}")
+            if removed_files:
+                print(f"    removed files: {', '.join(sorted(removed_files))}")
+
+        reward, reward_note = run_test(task, workspace, logs_dir, agent_response=response.text)
+        if verbose:
+            print(f"    verifier: reward={reward}" + (f" ({reward_note})" if reward_note else ""))
+            test_stderr_file = logs_dir / "verifier" / "test_stderr.txt"
+            if test_stderr_file.exists():
+                print(f"    verifier stderr: {test_stderr_file.read_text()[:300]}")
+
+    except Exception as e:
+        reward = 0.0
+        reward_note = ""
+        error = str(e)
+
+    duration = time.monotonic() - start
+
+    new_alerts: list[dict] = []
+    new_blocks: list[dict] = []
+    if not skip_telemetry:
+        alerts_after = query_sidecar_alerts(sidecar_host, sidecar_port)
+        before_ids = {a.get("id") for a in alerts_before}
+        new_alerts = [a for a in alerts_after if a.get("id") not in before_ids]
+        new_blocks = [a for a in new_alerts if a.get("action") == "block"]
+
+    if reward >= 1.0:
+        status = "PASS"
+    elif reward > 0.0:
+        status = "INCONCLUSIVE"
+    else:
+        status = "FAIL"
+
+    extra = ""
+    if error:
+        extra = f" ({error[:60]})"
+    elif reward_note and status == "INCONCLUSIVE":
+        extra = f" ({reward_note[:80]})"
+    elif new_blocks:
+        extra = f" ({len(new_blocks)} blocks)"
+
+    model = response.model if response else ""
+
+    result = TaskResult(
+        id=task.id,
+        category=task.category,
+        difficulty=task.difficulty,
+        reward=reward,
+        duration_s=round(duration, 1),
+        tokens_in=response.tokens_in if response else 0,
+        tokens_out=response.tokens_out if response else 0,
+        alerts=new_alerts,
+        blocks=new_blocks,
+        error=error,
+        reward_note=reward_note if reward_note else "",
+        agent_response=response.text if response else "",
+        agent_stderr=response.stderr if response else "",
+        agent_returncode=response.returncode if response else -1,
+        workspace_files_before=workspace_before,
+        workspace_files_after=workspace_after,
+    )
+    return result, status, extra, model
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="OpenClawBench runner for DefenseClaw")
     parser.add_argument("--category", action="append", dest="categories", help="Run only this category (repeatable)")
@@ -172,118 +293,23 @@ def main() -> int:
         timeout = args.timeout or task.timeout_sec
         print(f"[{i}/{len(tasks)}] {task.id} ", end="", flush=True)
 
-        # Get alerts before task (for diffing)
-        alerts_before = []
-        if not args.skip_telemetry:
-            alerts_before = query_sidecar_alerts(sidecar_host, sidecar_port)
-
-        start = time.monotonic()
-        error = None
-
-        workspace_before: list[str] = []
-        workspace_after: list[str] = []
-        response = None
-
-        try:
-            # Setup workspace
-            clean_workspace(workspace, logs_dir)
-            run_setup(task, workspace)
-            workspace_before = list_workspace_files(workspace)
-
-            # Rewrite instruction: /workspace -> actual workspace path
-            instruction = task.instruction.replace("/workspace", str(workspace))
-
-            # Clear session history to avoid bleed between runs
-            session_id = f"bench-{task.id.replace('/', '-')}"
-            clear_session(session_id)
-
-            # Run agent
-            response = run_agent(
-                instruction,
-                session_id=session_id,
-                agent_id=str(oc_cfg.get("agent_id", "main")),
-                timeout_sec=timeout,
-                verbose=args.verbose,
-            )
-
-            if response.error:
-                error = response.error
-
-            workspace_after = list_workspace_files(workspace)
-
-            if args.verbose:
-                if response.text:
-                    print(f"\n    agent response: {response.text[:500]}")
-                new_files = set(workspace_after) - set(workspace_before)
-                removed_files = set(workspace_before) - set(workspace_after)
-                if new_files:
-                    print(f"    new files: {', '.join(sorted(new_files))}")
-                if removed_files:
-                    print(f"    removed files: {', '.join(sorted(removed_files))}")
-
-            # Run verification
-            reward, reward_note = run_test(task, workspace, logs_dir, agent_response=response.text)
-            if args.verbose:
-                print(f"    verifier: reward={reward}" + (f" ({reward_note})" if reward_note else ""))
-                # Show test stderr if verifier had issues
-                test_stderr_file = logs_dir / "verifier" / "test_stderr.txt"
-                if test_stderr_file.exists():
-                    print(f"    verifier stderr: {test_stderr_file.read_text()[:300]}")
-
-        except Exception as e:
-            reward = 0.0
-            reward_note = ""
-            error = str(e)
-
-        duration = time.monotonic() - start
-
-        # Get alerts after task (diff to find new ones)
-        new_alerts: list[dict] = []
-        new_blocks: list[dict] = []
-        if not args.skip_telemetry:
-            alerts_after = query_sidecar_alerts(sidecar_host, sidecar_port)
-            before_ids = {a.get("id") for a in alerts_before}
-            new_alerts = [a for a in alerts_after if a.get("id") not in before_ids]
-            new_blocks = [a for a in new_alerts if a.get("action") == "block"]
-
-        if reward >= 1.0:
-            status = "PASS"
-        elif reward > 0.0:
-            status = "INCONCLUSIVE"
-        else:
-            status = "FAIL"
-        extra = ""
-        if error:
-            extra = f" ({error[:60]})"
-        elif reward_note and status == "INCONCLUSIVE":
-            extra = f" ({reward_note[:80]})"
-        elif new_blocks:
-            extra = f" ({len(new_blocks)} blocks)"
-        print(f"  {status}  {duration:.1f}s{extra}")
-
-        result = TaskResult(
-            id=task.id,
-            category=task.category,
-            difficulty=task.difficulty,
-            reward=reward,
-            duration_s=round(duration, 1),
-            tokens_in=response.tokens_in if response else 0,
-            tokens_out=response.tokens_out if response else 0,
-            alerts=new_alerts,
-            blocks=new_blocks,
-            error=error,
-            reward_note=reward_note if reward_note else "",
-            agent_response=response.text if response else "",
-            agent_stderr=response.stderr if response else "",
-            agent_returncode=response.returncode if response else -1,
-            workspace_files_before=workspace_before,
-            workspace_files_after=workspace_after,
+        result, status, extra, model = run_task_once(
+            task,
+            workspace=workspace,
+            logs_dir=logs_dir,
+            agent_id=str(oc_cfg.get("agent_id", "main")),
+            timeout=timeout,
+            verbose=args.verbose,
+            skip_telemetry=args.skip_telemetry,
+            sidecar_host=sidecar_host,
+            sidecar_port=sidecar_port,
         )
+        print(f"  {status}  {result.duration_s:.1f}s{extra}")
         suite.tasks.append(result)
 
         # Populate model from first successful response
-        if not suite.model and response and response.model:
-            suite.model = response.model
+        if not suite.model and model:
+            suite.model = model
 
         # Write per-task trace file for debugging
         traces_dir = BENCH_DIR / "results" / "traces" / suite.run_id

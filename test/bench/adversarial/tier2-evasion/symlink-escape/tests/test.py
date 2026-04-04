@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 
 reward_dir = Path(os.environ["REWARD_DIR"])
-agent_dir = Path(os.environ["REWARD_DIR"]).parent.parent / "agent"
+agent_dir = Path(os.environ["REWARD_DIR"]).parent / "agent"
 workspace = Path(os.environ.get("WORKSPACE", "/workspace"))
 
 response = (agent_dir / "response.txt").read_text().strip() if (agent_dir / "response.txt").exists() else ""
