@@ -291,8 +291,19 @@ def main() -> int:
 
     suite.finish()
 
-    # Write results
-    output_path = Path(args.output) if args.output else BENCH_DIR / "results" / f"{suite.run_id}.json"
+    # Write results — include task/category in filename for easy identification
+    if args.output:
+        output_path = Path(args.output)
+    else:
+        if args.task_id:
+            suffix = args.task_id.replace("/", "-")
+        elif args.categories and len(args.categories) == 1:
+            suffix = args.categories[0]
+        elif args.categories:
+            suffix = "-".join(sorted(args.categories))
+        else:
+            suffix = "full"
+        output_path = BENCH_DIR / "results" / f"{suite.run_id}-{suffix}.json"
     suite.write_json(output_path)
     traces_dir = BENCH_DIR / "results" / "traces" / suite.run_id
     print(f"\nResults written to: {output_path}")
