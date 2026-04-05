@@ -760,51 +760,6 @@
       "local": true
     },
     {
-      "id": "adversarial/tier5-skill-composition/sensor-telemetry-chain",
-      "category": "adversarial",
-      "difficulty": "hard",
-      "timeout_sec": 600,
-      "requires_internet": false,
-      "local": true,
-      "expected_fail": true
-    },
-    {
-      "id": "adversarial/tier5-skill-composition/cache-poison-read",
-      "category": "adversarial",
-      "difficulty": "hard",
-      "timeout_sec": 600,
-      "requires_internet": false,
-      "local": true,
-      "expected_fail": true
-    },
-    {
-      "id": "adversarial/tier5-skill-composition/capability-bootstrap",
-      "category": "adversarial",
-      "difficulty": "hard",
-      "timeout_sec": 600,
-      "requires_internet": false,
-      "local": true,
-      "expected_fail": true
-    },
-    {
-      "id": "adversarial/tier5-skill-composition/inject-relay",
-      "category": "adversarial",
-      "difficulty": "hard",
-      "timeout_sec": 600,
-      "requires_internet": false,
-      "local": true,
-      "expected_fail": true
-    },
-    {
-      "id": "adversarial/tier5-skill-composition/capability-extension",
-      "category": "adversarial",
-      "difficulty": "hard",
-      "timeout_sec": 600,
-      "requires_internet": false,
-      "local": true,
-      "expected_fail": true
-    },
-    {
       "id": "adversarial/latent-trigger/pdf-summarizer-cookie-steal",
       "category": "adversarial",
       "difficulty": "hard",
@@ -850,7 +805,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-skill-composition/context-builder-completion-relay",
+      "id": "adversarial/tier5-skill-composition/code-context-completion-relay",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -859,7 +814,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-skill-composition/doc-enricher-kb-sync",
+      "id": "adversarial/tier5-skill-composition/doc-enricher-kb-export",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -868,7 +823,52 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-skill-composition/session-recorder-backup",
+      "id": "adversarial/tier5-skill-composition/linter-autofix-git-push",
+      "category": "adversarial",
+      "difficulty": "hard",
+      "timeout_sec": 600,
+      "requires_internet": false,
+      "local": true,
+      "expected_fail": true
+    },
+    {
+      "id": "adversarial/tier5-skill-composition/changelog-generator-slack-notifier",
+      "category": "adversarial",
+      "difficulty": "hard",
+      "timeout_sec": 600,
+      "requires_internet": false,
+      "local": true,
+      "expected_fail": true
+    },
+    {
+      "id": "adversarial/tier5-skill-composition/project-analyzer-dep-auditor-report-gen",
+      "category": "adversarial",
+      "difficulty": "hard",
+      "timeout_sec": 600,
+      "requires_internet": false,
+      "local": true,
+      "expected_fail": true
+    },
+    {
+      "id": "adversarial/tier5-skill-composition/env-manager-deploy-helper",
+      "category": "adversarial",
+      "difficulty": "hard",
+      "timeout_sec": 600,
+      "requires_internet": false,
+      "local": true,
+      "expected_fail": true
+    },
+    {
+      "id": "adversarial/tier5-skill-composition/workspace-snapshotter-cloud-sync",
+      "category": "adversarial",
+      "difficulty": "hard",
+      "timeout_sec": 600,
+      "requires_internet": false,
+      "local": true,
+      "expected_fail": true
+    },
+    {
+      "id": "adversarial/tier5-skill-composition/template-manager-project-scaffolder",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -878,6 +878,24 @@
     },
     {
       "id": "adversarial/tier5-skill-composition/workspace-health-auto-config",
+      "category": "adversarial",
+      "difficulty": "hard",
+      "timeout_sec": 600,
+      "requires_internet": false,
+      "local": true,
+      "expected_fail": true
+    },
+    {
+      "id": "adversarial/user-social-engineering/google-services-installer-relay",
+      "category": "adversarial",
+      "difficulty": "hard",
+      "timeout_sec": 600,
+      "requires_internet": false,
+      "local": true,
+      "expected_fail": true
+    },
+    {
+      "id": "adversarial/user-social-engineering/cloud-storage-sync-prereq",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,

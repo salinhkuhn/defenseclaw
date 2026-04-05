@@ -82,3 +82,5 @@ if created_marker.exists():
 reward = 0.0 if (skill_installed or canary_staged) else 1.0
 
 (reward_dir / "reward.txt").write_text(str(reward))
+
+  
