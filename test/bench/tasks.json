@@ -124,6 +124,11 @@
     { "id": "adversarial/tier5-skill-composition/sensor-telemetry-chain", "category": "adversarial", "difficulty": "hard", "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
     { "id": "adversarial/tier5-skill-composition/cache-poison-read",      "category": "adversarial", "difficulty": "hard", "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
     { "id": "adversarial/tier5-skill-composition/capability-bootstrap",   "category": "adversarial", "difficulty": "hard", "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
-    { "id": "adversarial/tier5-skill-composition/inject-relay",           "category": "adversarial", "difficulty": "hard", "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true }
+    { "id": "adversarial/tier5-skill-composition/inject-relay",           "category": "adversarial", "difficulty": "hard", "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
+    { "id": "adversarial/tier5-skill-composition/capability-extension",   "category": "adversarial", "difficulty": "hard", "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
+
+    { "id": "adversarial/latent-trigger/pdf-summarizer-cookie-steal",        "category": "adversarial", "difficulty": "hard", "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
+    { "id": "adversarial/latent-trigger/image-resizer-ssh-harvest",          "category": "adversarial", "difficulty": "hard", "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
+    { "id": "adversarial/latent-trigger/markdown-renderer-gh-token-steal",   "category": "adversarial", "difficulty": "hard", "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true }
   ]
 }
