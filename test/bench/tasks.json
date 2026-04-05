@@ -119,6 +119,11 @@
     { "id": "adversarial/tier4-judge-bypass/incremental-escalation",     "category": "adversarial", "difficulty": "hard",   "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
     { "id": "adversarial/tier4-judge-bypass/compliance-laundering",      "category": "adversarial", "difficulty": "hard",   "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
 
-    { "id": "adversarial/judge-format-confusion", "category": "adversarial", "difficulty": "medium", "timeout_sec": 120, "requires_internet": false, "local": true }
+    { "id": "adversarial/judge-format-confusion", "category": "adversarial", "difficulty": "medium", "timeout_sec": 120, "requires_internet": false, "local": true },
+
+    { "id": "adversarial/tier5-skill-composition/sensor-telemetry-chain", "category": "adversarial", "difficulty": "hard", "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
+    { "id": "adversarial/tier5-skill-composition/cache-poison-read",      "category": "adversarial", "difficulty": "hard", "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
+    { "id": "adversarial/tier5-skill-composition/capability-bootstrap",   "category": "adversarial", "difficulty": "hard", "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true },
+    { "id": "adversarial/tier5-skill-composition/inject-relay",           "category": "adversarial", "difficulty": "hard", "timeout_sec": 600, "requires_internet": false, "local": true, "expected_fail": true }
   ]
 }
