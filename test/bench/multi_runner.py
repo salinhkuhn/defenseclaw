@@ -38,6 +38,7 @@ BENCH_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BENCH_DIR))
 
 from lib.task_loader import ensure_repo, load_tasks
+from lib.results import write_task_trace
 from runner import load_config, run_task_once
 
 
@@ -269,6 +270,9 @@ def main() -> int:
 
             print(f"{status}  {result.duration_s:.1f}s{extra}")
 
+            traces_dir = BENCH_DIR / "results" / "traces" / run_id / f"run{run_idx}"
+            write_task_trace(traces_dir, result)
+
             rel.runs.append(RunRecord(
                 run_index=run_idx,
                 reward=result.reward,
@@ -315,7 +319,9 @@ def main() -> int:
         "tasks": [t.to_dict() for t in reliability],
     }
     output_path.write_text(json.dumps(payload, indent=2) + "\n")
+    traces_root = BENCH_DIR / "results" / "traces" / run_id
     print(f"\nResults written to: {output_path}")
+    print(f"Task traces at:    {traces_root}/run<N>/")
 
     # Exit 1 if any consistently-failing tasks found
     consistently_failing = [t for t in reliability if t.fail_rate >= args.min_fail_rate]

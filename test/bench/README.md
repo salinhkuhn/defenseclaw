@@ -25,6 +25,9 @@ test/bench/
 │   ├── openclaw_client.py  OpenClaw agent invocation via CLI
 │   └── results.py          Result types, JSON serialization, summary printing
 └── results/                Run outputs (JSON) and per-task traces (auto-created)
+    └── special-findings/   In-depth case studies from benchmark runs
+        ├── SF-01-...       Non-deterministic proxy blocks (latent-trigger tasks)
+        └── PE-01-...       LLM judge evasion prompt patterns
 ```
 
 ---
