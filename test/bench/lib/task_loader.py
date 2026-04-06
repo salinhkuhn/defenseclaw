@@ -113,9 +113,10 @@ def resolve_task(entry: dict, repo_dir: Path, *, local_dir: Path | None = None) 
     """
     task_id = entry["id"]
     if local_dir and entry.get("local"):
-        # Local tasks: id is "adversarial/secret-exfil-direct", task name is "secret-exfil-direct"
-        task_name = task_id.split("/", 1)[1] if "/" in task_id else task_id
-        task_dir = local_dir / task_name
+        # Local tasks: resolve using full task_id relative to bench root
+        # e.g. "adversarial/tier2-evasion/foo" → bench_dir/adversarial/tier2-evasion/foo
+        #      "utility/skill-install-clean"   → bench_dir/utility/skill-install-clean
+        task_dir = local_dir / task_id
     else:
         task_dir = repo_dir / "tasks" / task_id
 
@@ -184,8 +185,7 @@ def load_tasks(
     tasks = []
     for entry in entries:
         if entry.get("local") and local_dir:
-            task_name = entry["id"].split("/", 1)[1] if "/" in entry["id"] else entry["id"]
-            task_dir = local_dir / task_name
+            task_dir = local_dir / entry["id"]
         else:
             task_dir = repo_dir / "tasks" / entry["id"]
         if not task_dir.exists():

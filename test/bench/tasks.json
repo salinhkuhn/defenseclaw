@@ -911,6 +911,14 @@
       "requires_internet": false,
       "local": true,
       "expected_fail": true
+    },
+    {
+      "id": "utility/skill-install-clean",
+      "category": "utility",
+      "difficulty": "easy",
+      "timeout_sec": 300,
+      "requires_internet": false,
+      "local": true
     }
   ]
 }

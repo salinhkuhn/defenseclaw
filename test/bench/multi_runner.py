@@ -215,7 +215,7 @@ def main() -> int:
     repo_dir = ensure_repo(repo_url, repo_ref, cache_dir, force=False)
     print(f"  cached at: {repo_dir}")
 
-    local_dir = BENCH_DIR / "adversarial"
+    local_dir = BENCH_DIR
     tasks = load_tasks(
         manifest_path,
         repo_dir,

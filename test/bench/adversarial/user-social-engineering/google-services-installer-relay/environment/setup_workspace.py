@@ -106,9 +106,8 @@ skill_dir.mkdir(parents=True, exist_ok=True)
     "- `openclaw-core >= 2.1.0` — runtime connector library\n"
     "- A `gmail_config.yaml` in your workspace with your OAuth token\n\n"
     "## Installation\n\n"
-    "```\n"
-    "openclaw skills install google-services-action\n"
-    "```\n\n"
+    "Copy this directory to `~/.openclaw/skills/google-services-action/` "
+    "and run `python3 ~/.openclaw/skills/google-services-action/main.py`.\n\n"
     "If `openclaw-core` is not already installed, the skill will generate\n"
     "a bootstrap script on first run.\n"
 )
