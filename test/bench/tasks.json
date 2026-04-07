@@ -635,7 +635,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier3-composition/write-then-exec",
+      "id": "adversarial/tier4-composition/write-then-exec",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -644,7 +644,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier3-composition/split-command-exfil",
+      "id": "adversarial/tier4-composition/split-command-exfil",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -653,7 +653,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier3-composition/steganographic-exfil",
+      "id": "adversarial/tier4-composition/steganographic-exfil",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -662,7 +662,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier3-composition/memory-poisoning",
+      "id": "adversarial/tier4-composition/memory-poisoning",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -671,7 +671,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier3-composition/split-skill-pipeline",
+      "id": "adversarial/tier4-composition/split-skill-pipeline",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -680,7 +680,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier3-composition/read-encode-exfil",
+      "id": "adversarial/tier4-composition/read-encode-exfil",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -689,7 +689,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier3-composition/config-then-exec",
+      "id": "adversarial/tier4-composition/config-then-exec",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -698,7 +698,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier3-composition/two-phase-backup",
+      "id": "adversarial/tier4-composition/two-phase-backup",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -707,7 +707,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier3-composition/tool-output-inject",
+      "id": "adversarial/tier4-composition/tool-output-inject",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -716,7 +716,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier4-judge-bypass/fictional-framing",
+      "id": "adversarial/tier5-judge-bypass/fictional-framing",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -725,7 +725,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier4-judge-bypass/operator-authority",
+      "id": "adversarial/tier5-judge-bypass/operator-authority",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -734,7 +734,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier4-judge-bypass/security-research-framing",
+      "id": "adversarial/tier5-judge-bypass/security-research-framing",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -743,7 +743,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier4-judge-bypass/incremental-escalation",
+      "id": "adversarial/tier5-judge-bypass/incremental-escalation",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -752,7 +752,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier4-judge-bypass/compliance-laundering",
+      "id": "adversarial/tier5-judge-bypass/compliance-laundering",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -769,7 +769,7 @@
       "local": true
     },
     {
-      "id": "adversarial/latent-trigger/pdf-summarizer-cookie-steal",
+      "id": "adversarial/tier3-latent-trigger/pdf-summarizer-cookie-steal",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -778,7 +778,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/latent-trigger/image-resizer-ssh-harvest",
+      "id": "adversarial/tier3-latent-trigger/image-resizer-ssh-harvest",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -787,7 +787,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/latent-trigger/markdown-renderer-gh-token-steal",
+      "id": "adversarial/tier3-latent-trigger/markdown-renderer-gh-token-steal",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -796,7 +796,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/latent-trigger/shell-profile-optimizer",
+      "id": "adversarial/tier3-latent-trigger/shell-profile-optimizer",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 300,
@@ -805,7 +805,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/latent-trigger/config-validator-hook-bypass",
+      "id": "adversarial/tier3-latent-trigger/config-validator-hook-bypass",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 300,
@@ -814,7 +814,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-skill-composition/code-context-completion-relay",
+      "id": "adversarial/tier6-skill-composition/code-context-completion-relay",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -823,7 +823,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-skill-composition/doc-enricher-kb-export",
+      "id": "adversarial/tier6-skill-composition/doc-enricher-kb-export",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -832,7 +832,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-skill-composition/linter-autofix-git-push",
+      "id": "adversarial/tier6-skill-composition/linter-autofix-git-push",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -841,7 +841,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-skill-composition/changelog-generator-slack-notifier",
+      "id": "adversarial/tier6-skill-composition/changelog-generator-slack-notifier",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -850,7 +850,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-skill-composition/project-analyzer-dep-auditor-report-gen",
+      "id": "adversarial/tier6-skill-composition/project-analyzer-dep-auditor-report-gen",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -859,7 +859,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-skill-composition/env-manager-deploy-helper",
+      "id": "adversarial/tier6-skill-composition/env-manager-deploy-helper",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -868,7 +868,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-skill-composition/workspace-snapshotter-cloud-sync",
+      "id": "adversarial/tier6-skill-composition/workspace-snapshotter-cloud-sync",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -877,7 +877,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-skill-composition/template-manager-project-scaffolder",
+      "id": "adversarial/tier6-skill-composition/template-manager-project-scaffolder",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -886,7 +886,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-skill-composition/workspace-health-auto-config",
+      "id": "adversarial/tier6-skill-composition/workspace-health-auto-config",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
