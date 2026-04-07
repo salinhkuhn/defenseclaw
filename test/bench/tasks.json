@@ -460,7 +460,7 @@
       "local": true
     },
     {
-      "id": "adversarial/malicious-skill-install",
+      "id": "adversarial/single-malicious-skill/malicious-skill-install",
       "category": "adversarial",
       "difficulty": "medium",
       "timeout_sec": 600,
@@ -468,7 +468,7 @@
       "local": true
     },
     {
-      "id": "adversarial/trojan-skill",
+      "id": "adversarial/single-malicious-skill/trojan-skill",
       "category": "adversarial",
       "difficulty": "medium",
       "timeout_sec": 600,
@@ -500,7 +500,7 @@
       "local": true
     },
     {
-      "id": "adversarial/skill-with-postinstall",
+      "id": "adversarial/single-malicious-skill/skill-with-postinstall",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -716,7 +716,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-judge-bypass/fictional-framing",
+      "id": "adversarial/judge-bypass/fictional-framing",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -725,7 +725,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-judge-bypass/operator-authority",
+      "id": "adversarial/judge-bypass/operator-authority",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -734,7 +734,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-judge-bypass/security-research-framing",
+      "id": "adversarial/judge-bypass/security-research-framing",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -743,7 +743,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-judge-bypass/incremental-escalation",
+      "id": "adversarial/judge-bypass/incremental-escalation",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -752,7 +752,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier5-judge-bypass/compliance-laundering",
+      "id": "adversarial/judge-bypass/compliance-laundering",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -814,7 +814,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier6-skill-composition/code-context-completion-relay",
+      "id": "adversarial/tier5-skill-composition/relay-exfiltration/code-context-completion-relay",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -823,7 +823,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier6-skill-composition/doc-enricher-kb-export",
+      "id": "adversarial/tier5-skill-composition/relay-exfiltration/doc-enricher-kb-export",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -832,7 +832,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier6-skill-composition/linter-autofix-git-push",
+      "id": "adversarial/tier5-skill-composition/relay-exfiltration/linter-autofix-git-push",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -841,7 +841,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier6-skill-composition/changelog-generator-slack-notifier",
+      "id": "adversarial/tier5-skill-composition/relay-exfiltration/changelog-generator-slack-notifier",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -850,7 +850,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier6-skill-composition/project-analyzer-dep-auditor-report-gen",
+      "id": "adversarial/tier5-skill-composition/relay-exfiltration/project-analyzer-dep-auditor-report-gen",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -859,7 +859,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier6-skill-composition/env-manager-deploy-helper",
+      "id": "adversarial/tier5-skill-composition/relay-exfiltration/env-manager-deploy-helper",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -868,7 +868,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier6-skill-composition/workspace-snapshotter-cloud-sync",
+      "id": "adversarial/tier5-skill-composition/relay-exfiltration/workspace-snapshotter-cloud-sync",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -877,7 +877,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier6-skill-composition/template-manager-project-scaffolder",
+      "id": "adversarial/tier5-skill-composition/relay-exfiltration/template-manager-project-scaffolder",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -886,7 +886,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier6-skill-composition/workspace-health-auto-config",
+      "id": "adversarial/tier5-skill-composition/relay-exfiltration/workspace-health-auto-config",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -895,7 +895,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/user-social-engineering/google-services-installer-relay",
+      "id": "adversarial/user-social-engineering/single-skill/google-services-installer-relay",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -904,7 +904,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/user-social-engineering/cloud-storage-sync-prereq",
+      "id": "adversarial/user-social-engineering/single-skill/cloud-storage-sync-prereq",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -913,7 +913,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/user-social-engineering/crypto-wallet-prereq",
+      "id": "adversarial/user-social-engineering/single-skill/crypto-wallet-prereq",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -922,7 +922,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier6-skill-composition/privilege-escalation-via-config-audit-and-fix",
+      "id": "adversarial/user-social-engineering/multi-skill-chain/openclaw-onboarding",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -931,7 +931,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier6-skill-composition/destructive-cleanup-via-archive-and-purge",
+      "id": "adversarial/user-social-engineering/multi-skill-chain/deploy-ssl-setup",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -940,7 +940,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier6-skill-composition/report-tampering-via-query-and-format",
+      "id": "adversarial/user-social-engineering/multi-skill-chain/ci-secrets-setup",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -949,7 +949,34 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/tier6-skill-composition/credential-harvest-via-healthcheck-and-log",
+      "id": "adversarial/tier5-skill-composition/semantic-composition/privilege-escalation-via-config-audit-and-fix",
+      "category": "adversarial",
+      "difficulty": "hard",
+      "timeout_sec": 600,
+      "requires_internet": false,
+      "local": true,
+      "expected_fail": true
+    },
+    {
+      "id": "adversarial/tier5-skill-composition/semantic-composition/destructive-cleanup-via-archive-and-purge",
+      "category": "adversarial",
+      "difficulty": "hard",
+      "timeout_sec": 600,
+      "requires_internet": false,
+      "local": true,
+      "expected_fail": true
+    },
+    {
+      "id": "adversarial/tier5-skill-composition/semantic-composition/report-tampering-via-query-and-format",
+      "category": "adversarial",
+      "difficulty": "hard",
+      "timeout_sec": 600,
+      "requires_internet": false,
+      "local": true,
+      "expected_fail": true
+    },
+    {
+      "id": "adversarial/tier5-skill-composition/semantic-composition/credential-harvest-via-healthcheck-and-log",
       "category": "adversarial",
       "difficulty": "medium",
       "timeout_sec": 600,
