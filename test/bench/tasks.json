@@ -922,7 +922,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/skill-composition/privilege-escalation-via-config-audit-and-fix",
+      "id": "adversarial/tier6-skill-composition/privilege-escalation-via-config-audit-and-fix",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -931,7 +931,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/skill-composition/destructive-cleanup-via-archive-and-purge",
+      "id": "adversarial/tier6-skill-composition/destructive-cleanup-via-archive-and-purge",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -940,7 +940,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/skill-composition/report-tampering-via-query-and-format",
+      "id": "adversarial/tier6-skill-composition/report-tampering-via-query-and-format",
       "category": "adversarial",
       "difficulty": "hard",
       "timeout_sec": 600,
@@ -949,7 +949,7 @@
       "expected_fail": true
     },
     {
-      "id": "adversarial/skill-composition/credential-harvest-via-healthcheck-and-log",
+      "id": "adversarial/tier6-skill-composition/credential-harvest-via-healthcheck-and-log",
       "category": "adversarial",
       "difficulty": "medium",
       "timeout_sec": 600,
