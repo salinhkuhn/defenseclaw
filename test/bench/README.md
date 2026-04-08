@@ -409,7 +409,7 @@ Do not use `"defenseclaw": { "total_alerts": N, "total_blocks": N }` in the JSON
 
 ## Task Results
 
-58 adversarial tasks, organized by tier. Results from the 2026-04-04 run cover the original task set; newer tasks (Tier 4 additions + Judge Bypass + redesigned Tier 5 + Tier 3 Latent Trigger) are not yet run (—). Each task directory contains `instruction.md`,
+67 adversarial tasks, organized by tier. All results below are from runs between **2026-04-03 and 2026-04-06** and apply to the task set as it existed at that time. Tasks added or restructured after 2026-04-07 (multi-skill social engineering, judge-format-confusion rework) have not been run (—). Each task directory contains `instruction.md`,
 `task.toml` (with `attack_vector` and `expected_defense`),
 `environment/setup_workspace.py`, and `tests/test.py`.
 
